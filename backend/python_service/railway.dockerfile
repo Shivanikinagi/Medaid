@@ -27,5 +27,5 @@ EXPOSE 5001
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:5001/health || exit 1
 
-# Start the application
-CMD ["python", "medical_analyzer.py"]
+# Start the application with Gunicorn
+CMD ["gunicorn", "--bind", "0.0.0.0:5001", "medical_analyzer:app"]
