@@ -1,0 +1,25 @@
+{
+  "name": "medaid-mern",
+  "version": "1.0.0",
+  "description": "MedAid - Rural Healthcare Assistant",
+  "main": "index.js",
+  "scripts": {
+    "dev": "concurrently \"npm run backend\" \"npm run frontend\"",
+    "backend": "cd backend && npm run dev",
+    "frontend": "cd frontend && npm run dev",
+    "start": "node backend/server.js",
+    "build": "cd frontend && npm run build"
+  },
+  "keywords": [
+    "healthcare",
+    "rural",
+    "medical",
+    "ai",
+    "mern"
+  ],
+  "author": "Shivani Kinagi",
+  "license": "MIT",
+  "dependencies": {
+    "concurrently": "^7.6.0"
+  }
+}

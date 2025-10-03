@@ -1,0 +1,55 @@
+version: '3.8'
+
+services:
+  # MongoDB database
+  mongodb:
+    image: mongo:6.0
+    container_name: medaid-mongodb-dev
+    restart: always
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: admin
+      MONGO_INITDB_ROOT_PASSWORD: password
+    volumes:
+      - mongodb_data_dev:/data/db
+    ports:
+      - "27017:27017"
+
+  # Backend service with hot reloading
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.dev
+    container_name: medaid-backend-dev
+    restart: always
+    environment:
+      - NODE_ENV=development
+      - MONGO_URI=mongodb://admin:password@mongodb:27017/medaid?authSource=admin
+      - JWT_SECRET=your_jwt_secret_key_here
+      - GOOGLE_API_KEY=your_google_gemini_api_key_here
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./backend:/app
+      - ./backend/uploads:/app/uploads
+      - ./backend/python_service:/app/python_service
+      - /app/node_modules
+    depends_on:
+      - mongodb
+
+  # Frontend service with hot reloading
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.dev
+    container_name: medaid-frontend-dev
+    restart: always
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    depends_on:
+      - backend
+
+volumes:
+  mongodb_data_dev:

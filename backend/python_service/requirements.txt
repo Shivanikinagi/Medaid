@@ -1,0 +1,9 @@
+flask
+flask-cors
+pymongo
+python-dotenv
+pandas
+scikit-learn
+langchain
+langchain-google-genai
+google-generativeai
