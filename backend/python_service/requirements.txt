@@ -1,3 +1,5 @@
+# Requirements for MedAid Python service
+# Updated 2025-10-04 to resolve dependency conflicts
 flask==2.3.2
 flask-cors==4.0.0
 pymongo==4.5.0
