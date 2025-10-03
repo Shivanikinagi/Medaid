@@ -1,6 +1,8 @@
 """
 Medical Analyzer Service - Python backend for MedAid
 This service exposes the existing Python medical analysis functionality as a REST API
+
+Updated: 2025-10-04 - Fixed dependency conflicts for Railway deployment
 """
 
 import sys
