@@ -1,12 +1,10 @@
-# Requirements for MedAid Python service
-# Updated 2025-10-04 to resolve dependency conflicts
 flask==2.3.2
 flask-cors==4.0.0
 pymongo==4.5.0
 python-dotenv==1.0.0
 pandas==2.0.3
 scikit-learn==1.3.0
-langchain==0.1.0
-langchain-google-genai==0.0.11
-google-generativeai==0.4.0
-gunicorn==20.1.0
+langchain==0.0.352
+langchain-google-genai==0.0.9  # or 2.1.12
+google-generativeai==0.3.2
+gunicorn==20.1.0  # If added for production
