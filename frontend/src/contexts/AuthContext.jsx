@@ -1,5 +1,5 @@
 import React, { createContext, useState, useEffect, useContext } from 'react';
-import { userAPI } from '../services/api';
+import api from '../services/api';
 
 // Create Auth Context
 const AuthContext = createContext();
@@ -21,33 +21,40 @@ export const AuthProvider = ({ children }) => {
     setLoading(false);
   }, []);
 
-  // Login function
+  // Login function using the proper auth endpoint
   const login = async (userData) => {
+    setLoading(true);
     try {
-      // Check if user already exists
-      let response;
-      try {
-        response = await userAPI.getUserByEmail(userData.email);
-      } catch (error) {
-        // If user doesn't exist, create new user
-        if (error.response?.status === 404) {
-          response = await userAPI.createUser(userData);
-        } else {
-          throw error;
-        }
+      console.log("🔧 Calling auth login endpoint with data:", userData);
+      
+      // For login, we only need email and password
+      // But if this is user registration data, we need to handle it differently
+      const loginData = {
+        email: userData.email,
+        password: userData.password || 'default_password' // Provide a default password if not provided
+      };
+      
+      // Call the auth login endpoint directly
+      const response = await api.post('/auth/login', loginData);
+      
+      const data = response.data;
+      console.log("🔧 Auth login response:", data);
+      
+      if (data.token) {
+        // Store token and user data in localStorage
+        localStorage.setItem('token', data.token);
+        localStorage.setItem('user', JSON.stringify(data.user));
+        
+        // Set user in state
+        setUser(data.user);
       }
       
-      const user = response.data;
-      
-      // Store user data in localStorage
-      localStorage.setItem('user', JSON.stringify(user));
-      
-      // Set user in state
-      setUser(user);
-      
-      return user;
+      setLoading(false);
+      return data;
     } catch (error) {
-      console.error('Login error:', error);
+      console.error('💥 Login error:', error);
+      console.error('💥 Error response:', error.response);
+      setLoading(false);
       throw error;
     }
   };
@@ -69,7 +76,7 @@ export const AuthProvider = ({ children }) => {
         ...(sessionRecord && { session_record: sessionRecord })
       };
       
-      const response = await userAPI.updateUserHistory(user._id, updateData);
+      const response = await api.put(`/users/${user._id}/history`, updateData);
       const updatedUser = response.data;
       
       // Update localStorage and state
@@ -88,7 +95,7 @@ export const AuthProvider = ({ children }) => {
     if (!user) return;
     
     try {
-      const response = await userAPI.updateUserReportData(user._id, reportData);
+      const response = await api.put(`/users/${user._id}/report-data`, reportData);
       const updatedUser = response.data;
       
       // Update localStorage and state

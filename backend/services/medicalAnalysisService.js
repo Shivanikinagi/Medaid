@@ -1,7 +1,9 @@
 import axios from 'axios';
 
 // Python service URL - this should match the port in medical_analyzer.py
-const PYTHON_SERVICE_URL = process.env.PYTHON_SERVICE_URL || 'http://localhost:5001';
+// In Railway multi-service deployments, services can communicate using service names
+const PYTHON_SERVICE_URL = process.env.PYTHON_SERVICE_URL || 
+                         (process.env.RAILWAY_SERVICE_NAME ? 'http://medaid-python:5001' : 'http://localhost:5001');
 
 /**
  * Analyze symptoms using the Python backend service
@@ -22,7 +24,11 @@ export const analyzeSymptoms = async (data) => {
       }
     });
     
-    const response = await axios.post(`${PYTHON_SERVICE_URL}/analyze`, data);
+    // Add timeout to prevent hanging
+    const response = await axios.post(`${PYTHON_SERVICE_URL}/analyze`, data, {
+      timeout: 30000 // 30 second timeout
+    });
+    
     console.log('Received response from Python analysis service:', {
       status: response.status,
       dataKeys: Object.keys(response.data)
@@ -33,8 +39,14 @@ export const analyzeSymptoms = async (data) => {
     console.error('Error calling Python analysis service:', {
       message: error.message,
       url: `${PYTHON_SERVICE_URL}/analyze`,
-      code: error.code
+      code: error.code,
+      response: error.response ? {
+        status: error.response.status,
+        data: error.response.data
+      } : undefined
     });
+    
+    // Re-throw the error so it can be handled by the calling function
     throw new Error(`Failed to analyze symptoms: ${error.message}`);
   }
 };
@@ -53,7 +65,11 @@ export const reportToFeatures = async (data) => {
       url: `${PYTHON_SERVICE_URL}/report_features`
     });
     
-    const response = await axios.post(`${PYTHON_SERVICE_URL}/report_features`, data);
+    // Add timeout to prevent hanging
+    const response = await axios.post(`${PYTHON_SERVICE_URL}/report_features`, data, {
+      timeout: 30000 // 30 second timeout
+    });
+    
     console.log('Received response from Python report features service:', {
       status: response.status
     });
@@ -63,8 +79,14 @@ export const reportToFeatures = async (data) => {
     console.error('Error calling Python report features service:', {
       message: error.message,
       url: `${PYTHON_SERVICE_URL}/report_features`,
-      code: error.code
+      code: error.code,
+      response: error.response ? {
+        status: error.response.status,
+        data: error.response.data
+      } : undefined
     });
+    
+    // Re-throw the error so it can be handled by the calling function
     throw new Error(`Failed to process report features: ${error.message}`);
   }
 };
@@ -76,14 +98,20 @@ export const reportToFeatures = async (data) => {
 export const healthCheck = async () => {
   try {
     console.log('Checking Python service health:', `${PYTHON_SERVICE_URL}/health`);
-    const response = await axios.get(`${PYTHON_SERVICE_URL}/health`);
+    const response = await axios.get(`${PYTHON_SERVICE_URL}/health`, {
+      timeout: 5000 // 5 second timeout
+    });
     console.log('Python service health check result:', response.data);
     return response.data.status === 'ok';
   } catch (error) {
     console.error('Python service health check failed:', {
       message: error.message,
       url: `${PYTHON_SERVICE_URL}/health`,
-      code: error.code
+      code: error.code,
+      response: error.response ? {
+        status: error.response.status,
+        data: error.response.data
+      } : undefined
     });
     return false;
   }

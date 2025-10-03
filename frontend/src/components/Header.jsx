@@ -3,6 +3,7 @@ import styled from 'styled-components';
 import { Link } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { FaHospital, FaUser, FaSignOutAlt } from 'react-icons/fa';
+import logo from "../assets/logo.svg";
 
 const HeaderWrapper = styled.header`
   background: linear-gradient(90deg, #4CAF50, #45a049);
@@ -35,6 +36,11 @@ const Logo = styled(Link)`
   &:hover {
     color: #e0f7fa;
   }
+`;
+
+const LogoImage = styled.img`
+  height: 40px;
+  width: auto;
 `;
 
 const Nav = styled.nav`
@@ -89,7 +95,8 @@ const Header = () => {
     <HeaderWrapper>
       <HeaderContent>
         <Logo to="/">
-          <FaHospital /> MedAid
+          <LogoImage src={logo} alt="MedAid Logo" />
+          <span>MedAid</span>
         </Logo>
         
         <Nav>

@@ -8,7 +8,7 @@ export default defineConfig({
     port: 5175,
     proxy: {
       '/api': {
-        target: 'http://localhost:5008',
+        target: 'https://medaid-b-production.up.railway.app',
         changeOrigin: true,
         secure: false,
       }

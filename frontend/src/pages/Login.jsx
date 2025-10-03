@@ -204,7 +204,14 @@ const Login = () => {
     setError('');
     
     try {
-      await login(formData);
+      // For login, we only need email (password is optional in this implementation)
+      // But the auth endpoint expects email and password
+      const loginData = {
+        email: formData.email,
+        password: 'default_password' // Using default password as this is a simplified auth system
+      };
+      
+      await login(loginData);
       navigate('/consultation');
     } catch (err) {
       setError('Failed to login. Please try again.');

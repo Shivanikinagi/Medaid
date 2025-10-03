@@ -1,75 +1,89 @@
-import axios from 'axios';
+// frontend/src/services/api.js
+import axios from "axios";
 
-// Create axios instance with default config
+// Hardcoded baseURL for production - this should always work
+const baseURL = "https://medaid-b-production.up.railway.app/api";
+
+// Debug (temporary) - shows in browser console when app loads
+console.log("🔧 Hardcoded Axios baseURL (final):", baseURL);
+
+// Create the api instance with hardcoded baseURL
 const api = axios.create({
-  baseURL: 'http://localhost:5008/api',
+  baseURL,
   headers: {
-    'Content-Type': 'application/json',
+    "Content-Type": "application/json",
   },
 });
 
-// Request interceptor
-api.interceptors.request.use(
-  (config) => {
-    // Get token from localStorage if exists
-    const token = localStorage.getItem('token');
-    if (token) {
-      config.headers.Authorization = `Bearer ${token}`;
-    }
-    return config;
-  },
-  (error) => {
-    return Promise.reject(error);
-  }
-);
+// Optional: log each outgoing request so you can verify the exact final URL
+api.interceptors.request.use((config) => {
+  // prints something like: https://medaid-b-production.up.railway.app/api/users/abc
+  console.log("➡️ API Request:", config.baseURL + config.url);
+  console.log("➡️ Full config:", config);
+  return config;
+}, (err) => Promise.reject(err));
 
-// Response interceptor
-api.interceptors.response.use(
-  (response) => {
-    return response;
-  },
-  (error) => {
-    if (error.response?.status === 401) {
-      // Handle unauthorized access
-      localStorage.removeItem('token');
-      localStorage.removeItem('user');
-      window.location.href = '/login';
-    }
-    return Promise.reject(error);
-  }
-);
+/**
+ * Export the axios instance and helper grouped APIs.
+ * Keep helper functions using relative paths (e.g. '/users') so they resolve to baseURL + '/users'.
+ */
+export default api;
 
-// User API endpoints
 export const userAPI = {
-  // Get user by email
-  getUserByEmail: (email) => api.get(`/users/${email}`),
-  
-  // Create new user
-  createUser: (userData) => api.post('/users', userData),
-  
-  // Update user history
-  updateUserHistory: (userId, historyData) => api.put(`/users/${userId}/history`, historyData),
-  
-  // Update user report data
-  updateUserReportData: (userId, reportData) => api.put(`/users/${userId}/report-data`, reportData),
+  getUserByEmail: (email) => {
+    console.log("🔧 Calling userAPI.getUserByEmail with email:", email);
+    console.log("🔧 Using api instance with baseURL:", api.defaults.baseURL);
+    // Test the URL construction
+    const testURL = api.getUri({ url: `/users/${email}` });
+    console.log("🔧 Constructed URL:", testURL);
+    const result = api.get(`/users/${email}`);
+    console.log("🔧 Result promise:", result);
+    return result;
+  },
+  createUser: (userData) => {
+    console.log("🔧 Calling userAPI.createUser with data:", userData);
+    console.log("🔧 Using api instance with baseURL:", api.defaults.baseURL);
+    // Test the URL construction
+    const testURL = api.getUri({ url: '/users' });
+    console.log("🔧 Constructed URL:", testURL);
+    const result = api.post('/users', userData);
+    console.log("🔧 Result promise:", result);
+    return result;
+  },
+  updateUserHistory: (userId, historyData) => {
+    console.log("🔧 Calling userAPI.updateUserHistory with userId:", userId);
+    console.log("🔧 Using api instance with baseURL:", api.defaults.baseURL);
+    const result = api.put(`/users/${userId}/history`, historyData);
+    console.log("🔧 Result promise:", result);
+    return result;
+  },
+  updateUserReportData: (userId, reportData) => {
+    console.log("🔧 Calling userAPI.updateUserReportData with userId:", userId);
+    console.log("🔧 Using api instance with baseURL:", api.defaults.baseURL);
+    const result = api.put(`/users/${userId}/report-data`, reportData);
+    console.log("🔧 Result promise:", result);
+    return result;
+  },
 };
 
-// Consultation API endpoints
 export const consultationAPI = {
-  // Start consultation
-  startConsultation: (consultationData) => api.post('/consultations/start', consultationData),
-  
-  // Process clarification questions
-  processClarification: (clarificationData) => api.post('/consultations/clarification', clarificationData),
-  
-  // Generate PDF report
-  generateReport: (reportData) => api.post('/consultations/report', reportData),
+  startConsultation: (consultationData) => {
+    console.log("🔧 Using api instance with baseURL:", api.defaults.baseURL);
+    return api.post('/consultations/start', consultationData);
+  },
+  processClarification: (clarificationData) => {
+    console.log("🔧 Using api instance with baseURL:", api.defaults.baseURL);
+    return api.post('/consultations/clarification', clarificationData);
+  },
+  generateReport: (reportData) => {
+    console.log("🔧 Using api instance with baseURL:", api.defaults.baseURL);
+    return api.post('/consultations/report', reportData);
+  },
 };
 
-// Report API endpoints
 export const reportAPI = {
-  // Process medical report
   processReport: (formData) => {
+    console.log("🔧 Using api instance with baseURL:", api.defaults.baseURL);
     const config = {
       headers: {
         'Content-Type': 'multipart/form-data',
@@ -77,15 +91,16 @@ export const reportAPI = {
     };
     return api.post('/reports/process', formData, config);
   },
-  
-  // Generate report explanation
-  generateExplanation: (explanationData) => api.post('/reports/explanation', explanationData),
-  
-  // Analyze symptoms
-  analyzeSymptoms: (analysisData) => api.post('/reports/analyze', analysisData),
+  generateExplanation: (explanationData) => {
+    console.log("🔧 Using api instance with baseURL:", api.defaults.baseURL);
+    return api.post('/reports/explanation', explanationData);
+  },
+  analyzeSymptoms: (analysisData) => {
+    console.log("🔧 Using api instance with baseURL:", api.defaults.baseURL);
+    return api.post('/reports/analyze', analysisData);
+  },
 };
 
-// Utility function to download PDF from base64 data
 export const downloadPDF = (base64Data, fileName) => {
   try {
     const byteCharacters = atob(base64Data);
@@ -114,5 +129,3 @@ export const downloadPDF = (base64Data, fileName) => {
     throw new Error('Failed to download PDF report');
   }
 };
-
-export default api;

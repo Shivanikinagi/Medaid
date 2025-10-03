@@ -34,6 +34,14 @@ export const startConsultation = async (req, res) => {
     res.status(200).json(result.assessment || result);
   } catch (error) {
     console.error('Error starting consultation:', error);
+    // Provide a more user-friendly error message
+    if (error.message.includes('ECONNREFUSED') || error.message.includes('ENOTFOUND')) {
+      return res.status(503).json({ 
+        message: 'Service temporarily unavailable. The medical analysis service is not currently available. Please try again later.',
+        error: 'Service Unavailable',
+        timestamp: new Date().toISOString()
+      });
+    }
     res.status(500).json({ 
       message: 'Server error during consultation', 
       error: error.message,
@@ -76,6 +84,14 @@ export const processClarification = async (req, res) => {
     res.status(200).json(result.assessment || result);
   } catch (error) {
     console.error('Error processing clarification:', error);
+    // Provide a more user-friendly error message
+    if (error.message.includes('ECONNREFUSED') || error.message.includes('ENOTFOUND')) {
+      return res.status(503).json({ 
+        message: 'Service temporarily unavailable. The medical analysis service is not currently available. Please try again later.',
+        error: 'Service Unavailable',
+        timestamp: new Date().toISOString()
+      });
+    }
     res.status(500).json({ 
       message: 'Server error during clarification processing', 
       error: error.message,

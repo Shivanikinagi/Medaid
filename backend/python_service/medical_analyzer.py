@@ -44,9 +44,13 @@ except Exception as e:
 app = Flask(__name__)
 CORS(app)
 
+# Enable CORS for all routes and origins in production
+if os.environ.get('NODE_ENV') == 'production':
+    CORS(app, origins=['https://medaid-bzoo95t68-shivanikiknagi-gmailcoms-projects.vercel.app'])
+
 @app.route('/health', methods=['GET'])
 def health_check():
-    return jsonify({"status": "ok", "message": "Medical Analyzer Service is running"})
+    return jsonify({"status": "ok", "message": "Medical Analyzer Service is running", "service": "python-medical-analyzer"})
 
 @app.route('/analyze', methods=['POST'])
 def analyze_symptoms():
@@ -88,4 +92,6 @@ def report_features():
         return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':
-    app.run(host='localhost', port=5001, debug=True)
+    # Get port from environment variable or default to 5001
+    port = int(os.environ.get('PORT', 5001))
+    app.run(host='0.0.0.0', port=port, debug=False)
