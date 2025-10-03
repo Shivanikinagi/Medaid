@@ -52,7 +52,7 @@ if os.environ.get('NODE_ENV') == 'production':
 
 @app.route('/health', methods=['GET'])
 def health_check():
-    return jsonify({"status": "ok", "message": "Medical Analyzer Service is running", "service": "python-medical-analyzer"})
+    return jsonify({"status": "healthy", "message": "Medical Analyzer Service is running", "service": "python-medical-analyzer"})
 
 @app.route('/analyze', methods=['POST'])
 def analyze_symptoms():
