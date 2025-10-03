@@ -1,4 +1,5 @@
 # Use Python 3.9 slim image
+# Updated 2025-10-04 to resolve dependency conflicts
 FROM python:3.9-slim
 
 # Set working directory
