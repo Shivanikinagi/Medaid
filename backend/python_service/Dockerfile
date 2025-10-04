@@ -23,4 +23,4 @@ COPY . .
 EXPOSE 5001
 
 # Start the application
-CMD ["python", "medical_analyzer.py"]
+CMD ["gunicorn", "--bind", "0.0.0.0:5001", "medical_analyzer:app"]
