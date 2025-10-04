@@ -4,6 +4,7 @@ import dotenv from 'dotenv';
 import mongoose from 'mongoose';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import axios from 'axios';
 
 // Import routes
 import userRoutes from './routes/userRoutes.js';
@@ -107,15 +108,44 @@ mongoose.connect(process.env.MONGO_URI || 'mongodb://localhost:27017/medaid', {
   // process.exit(1);
 });
 
+// Add a middleware to log all requests
+app.use((req, res, next) => {
+  console.log(`🔧 ${req.method} ${req.url}`);
+  next();
+});
+
+// Debug route to test connectivity to Python service
+const debugRouter = express.Router();
+
+debugRouter.get("/debug/python-health", async (req, res) => {
+  try {
+    const base = (process.env.PYTHON_SERVICE_URL || "").replace(/\/$/, "");
+    if (!base) return res.status(500).json({ ok: false, message: "PYTHON_SERVICE_URL not set in backend env" });
+
+    // adjust the path if your python health path differs
+    const url = `${base}/health`;
+    console.log("DEBUG: calling python health at", url);
+
+    const resp = await axios.get(url, { timeout: 15000 }); // 15s timeout
+    console.log("DEBUG: python response status", resp.status);
+
+    return res.json({ ok: true, pythonUrl: url, status: resp.status, data: resp.data });
+  } catch (err) {
+    console.error("DEBUG: python health call failed:", err?.message, err?.response?.data || "");
+    const status = err?.response?.status || 502;
+    return res.status(status).json({
+      ok: false,
+      message: "Failed to reach Python service from backend",
+      error: err?.response?.data || err?.message,
+    });
+  }
+});
+
+app.use("/internal", debugRouter);
+
 // Start server
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
   console.log(`📍 Health check: http://localhost:${PORT}/api/health`);
   console.log(`📝 Note: Some features may be limited without MongoDB connection`);
-});
-
-// Add a middleware to log all requests
-app.use((req, res, next) => {
-  console.log(`🔧 ${req.method} ${req.url}`);
-  next();
 });
