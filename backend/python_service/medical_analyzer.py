@@ -44,11 +44,13 @@ except Exception as e:
         return {"age": user_profile.get("age", 0), "symptom_text": symptoms_text}
 
 app = Flask(__name__)
-CORS(app)
 
 # Enable CORS for all routes and origins in production
-if os.environ.get('NODE_ENV') == 'production':
-    CORS(app, origins=['https://medaid-bzoo95t68-shivanikiknagi-gmailcoms-projects.vercel.app'])
+# Updated to include the specific frontend domain
+CORS(app, origins=[
+    "https://medaid-bzoo95t68-shivanikiknagi-gmailcoms-projects.vercel.app",
+    "https://medaid-k4kshb3rp-shivanikinagi-gmailcoms-projects.vercel.app"
+])
 
 @app.route('/health', methods=['GET'])
 def health_check():
