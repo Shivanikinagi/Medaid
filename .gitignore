@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+venv/
+
+.env
+release_train_patients.csv
+F:\shivani\VSCode\projects\Medaid\project\.ipynb_checkpoints
+project/model_outputs/ 
+
+F:\shivani\VSCode\projects\Medaid\project\model_outputs\ 
+
+
+
+#Ignore vscode AI rules
+.github\instructions\codacy.instructions.md

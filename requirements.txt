@@ -1,0 +1,14 @@
+streamlit
+pymongo
+python-dotenv
+pandas
+scikit-learn
+transformers
+torch
+reportlab
+pymupdf
+Pillow
+pytesseract
+langchain
+langchain-google-genai
+google-generativeai

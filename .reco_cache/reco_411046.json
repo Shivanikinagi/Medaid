@@ -1,0 +1,19 @@
+{
+  "_ts": 1763963789.0605378,
+  "value": [
+    {
+      "name": "Primary Health Center (PHC)",
+      "address": "",
+      "maps_url": "",
+      "lat": null,
+      "lng": null
+    },
+    {
+      "name": "Community Health Center",
+      "address": "",
+      "maps_url": "",
+      "lat": null,
+      "lng": null
+    }
+  ]
+}
