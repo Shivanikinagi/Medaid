@@ -118,6 +118,11 @@ class TriageRecord(models.Model):
     assessment_source = models.CharField(max_length=50, default='ai')  # ai, safety_rule, emergency_rule
     similar_cases = models.JSONField(default=dict, blank=True)
     
+    # Follow-up conversation tracking
+    needs_follow_up = models.BooleanField(default=False)  # True if follow-up questions asked
+    follow_up_questions = models.JSONField(default=list, blank=True)  # Questions asked
+    follow_up_answers = models.TextField(blank=True, null=True)  # User's answers
+    
     # Related data
     medical_report = models.ForeignKey(MedicalReport, on_delete=models.SET_NULL, null=True, blank=True)
     

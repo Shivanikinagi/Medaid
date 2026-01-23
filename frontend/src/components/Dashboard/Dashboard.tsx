@@ -6,6 +6,8 @@ import MedicalHistory from './MedicalHistory';
 import PatientReports from '../PatientHistory/PatientReports';
 import ReportDetailsView from '../PatientHistory/ReportDetailsView';
 import FindSpecialist from '../Specialist/FindSpecialist';
+import { API_ENDPOINTS, API_BASE_URL } from '../../services/api';
+import { apiClient } from '../../services/apiService';
 import {
   Search,
   Plus,
@@ -69,7 +71,7 @@ const Dashboard: React.FC = () => {
     return (savedTheme as 'light' | 'dark') || 'dark';
   });
   const [language, setLanguage] = useState(i18n.language || 'english');
-
+  
   // Profile editing states
   const [editingField, setEditingField] = useState<string | null>(null);
   const [profileData, setProfileData] = useState({
@@ -86,12 +88,20 @@ const Dashboard: React.FC = () => {
   };
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputMessage, setInputMessage] = useState('');
-  const [userLocation, setUserLocation] = useState('');  // User's location for nearby hospitals
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [loading, setLoading] = useState(false);
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
   const [isListening, setIsListening] = useState(false);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
+  
+  // Follow-up questions state
+  const [pendingTriageId, setPendingTriageId] = useState<number | null>(null);
+  const [followUpQuestions, setFollowUpQuestions] = useState<string[]>([]);
+  const [waitingForFollowUp, setWaitingForFollowUp] = useState(false);
+  
+  // Location for nearby hospitals
+  const [userLocation, setUserLocation] = useState('');
+  const [userPincode, setUserPincode] = useState('');
   const [chatHistory] = useState<ChatHistory[]>([
     {
       id: '1',
@@ -131,10 +141,10 @@ const Dashboard: React.FC = () => {
 
   const fetchUserData = async () => {
     try {
-      const response = await fetch('http://localhost:8000/api/auth/me/', {
+      const response = await fetch(API_ENDPOINTS.AUTH.ME, {
         headers: authService.getAuthHeaders(),
       });
-
+      
       if (response.ok) {
         const data = await response.json();
         setUser(data);
@@ -190,139 +200,138 @@ const Dashboard: React.FC = () => {
 
     try {
       const token = localStorage.getItem('access_token');
-
+      
       if (!token) {
         throw new Error('No authentication token found. Please log in.');
       }
-
-      let response;
-
-      if (currentFile) {
-        // Use FormData for file uploads
+      
+      let data;
+      
+      // Check if we're answering follow-up questions (Phase 2)
+      if (waitingForFollowUp && pendingTriageId) {
+        // Phase 2: Submit follow-up answers
+        const res = await apiClient.post(API_ENDPOINTS.TRIAGE.ASSESS, {
+          triage_id: pendingTriageId,
+          follow_up_answers: currentInput,
+          location: userLocation,
+          pincode: userPincode
+        });
+        data = res.data;
+        
+        // Reset follow-up state
+        setPendingTriageId(null);
+        setFollowUpQuestions([]);
+        setWaitingForFollowUp(false);
+      } else if (currentFile) {
+        // Phase 1: Use FormData for file uploads
         const formData = new FormData();
         formData.append('current_symptoms', currentInput);
         formData.append('input_mode', 'document');
         formData.append('file', currentFile);
+        if (userLocation) formData.append('location', userLocation);
+        if (userPincode) formData.append('pincode', userPincode);
 
-        response = await fetch('http://127.0.0.1:8000/api/triage/assess/', {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${token}`,
-          },
-          body: formData
+        const res = await apiClient.post(API_ENDPOINTS.TRIAGE.ASSESS, formData, {
+          headers: { 'Content-Type': 'multipart/form-data' }
         });
+        data = res.data;
       } else {
-        // Use JSON for text-only requests
-        response = await fetch('http://127.0.0.1:8000/api/triage/assess/', {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${token}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            current_symptoms: currentInput,
-            input_mode: 'text',
-            location: userLocation || '',  // Use user-provided location
-          })
+        // Phase 1: Use JSON for text-only requests
+        const res = await apiClient.post(API_ENDPOINTS.TRIAGE.ASSESS, {
+          current_symptoms: currentInput,
+          input_mode: 'text',
+          location: userLocation,
+          pincode: userPincode
         });
+        data = res.data;
       }
-
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        console.error('API Error Response:', errorData);
-        throw new Error(errorData.error || `API request failed with status ${response.status}`);
+      
+      // Check if we got follow-up questions (Phase 1)
+      if (data.status === 'needs_follow_up' && data.follow_up_questions && data.follow_up_questions.length > 0) {
+        // Store triage ID and questions for Phase 2
+        setPendingTriageId(data.triage_id);
+        setFollowUpQuestions(data.follow_up_questions);
+        setWaitingForFollowUp(true);
+        
+        // Display follow-up questions to user
+        let questionText = '<div class="space-y-3">';
+        questionText += '<div class="text-blue-400 font-semibold mb-2">📋 I need some more information to provide an accurate assessment:</div>';
+        data.follow_up_questions.forEach((q: string, idx: number) => {
+          questionText += `<div class="bg-gray-700/50 p-3 rounded-lg"><span class="text-blue-300 font-medium">${idx + 1}.</span> ${q}</div>`;
+        });
+        questionText += '<div class="text-gray-400 text-sm mt-3">Please answer these questions in your next message.</div>';
+        questionText += '</div>';
+        
+        const aiMessage: Message = {
+          id: (Date.now() + 1).toString(),
+          text: questionText,
+          sender: 'ai',
+          timestamp: new Date(),
+        };
+        setMessages(prev => [...prev, aiMessage]);
+        setLoading(false);
+        return;
       }
-
-      const data = await response.json();
-
+      
       // Create emergency banner if detected
-      let responseText = isEmergency
+      let responseText = isEmergency 
         ? `<div class="bg-red-600 text-white px-4 py-3 rounded-xl font-bold text-lg mb-4 animate-pulse">
              🚨 EMERGENCY DETECTED - SEEK IMMEDIATE MEDICAL ATTENTION!
            </div>`
         : '';
-
-      // Create a rich formatted response with styled components (V2 Intelligence)
-      const riskColor =
-        data.risk_level === 'emergency' ? 'bg-red-600' :
-          data.risk_level === 'high' ? 'bg-orange-600' :
-            data.risk_level === 'medium' ? 'bg-yellow-600' : 'bg-green-600';
-
+      
+      // Create a rich formatted response with styled components
+      // Defensive handling for undefined values
+      let riskLevel = data.risk_level || 'Unknown';
+      if (typeof riskLevel === 'string') {
+        riskLevel = riskLevel.trim();
+      } else {
+        riskLevel = 'Unknown';
+      }
+      
+      const riskColor = 
+        riskLevel.toLowerCase() === 'emergency' ? 'bg-red-600' :
+        riskLevel.toLowerCase() === 'high' ? 'bg-orange-600' :
+        riskLevel.toLowerCase() === 'medium' ? 'bg-yellow-600' : 'bg-green-600';
+      
+      const confidence = typeof data.confidence === 'number' ? data.confidence : 0;
+      const reasoning = String(data.reasoning || 'Assessment in progress');
+      
       responseText += `<div class="space-y-4">`;
-
-      // Risk Level Header with Probability
       responseText += `<div class="${riskColor} text-white px-4 py-3 rounded-xl font-bold text-lg">`;
-      responseText += `🎯 ${data.risk_level.toUpperCase()} RISK`;
-      if (data.risk_probability) {
-        responseText += ` — ${(data.risk_probability * 100).toFixed(0)}% probability`;
-      }
-      responseText += ` — ${(data.confidence * 100).toFixed(0)}% confidence`;
+      responseText += `🎯 ${riskLevel.toUpperCase()} RISK — ${(confidence * 100).toFixed(0)}% confidence`;
       responseText += `</div>`;
-
-      // Reasoning/Justification
-      if (data.reasoning) {
-        responseText += `<div class="bg-gray-800/50 px-4 py-3 rounded-lg">`;
-        responseText += `<div class="text-sm font-semibold text-gray-300 mb-2">🧠 Assessment Reasoning:</div>`;
-        responseText += `<div class="text-gray-100 leading-relaxed text-sm">${data.reasoning}</div>`;
-        responseText += `</div>`;
-      }
-
-      // Top Possible Conditions with Probabilities
+      
+      responseText += `<div class="text-gray-100 leading-relaxed">`;
+      responseText += reasoning;
+      responseText += `</div>`;
+      
       if (data.possible_conditions && data.possible_conditions.length > 0) {
-        responseText += `<div class="bg-gray-800/50 px-4 py-3 rounded-lg">`;
-        responseText += `<div class="text-sm font-semibold text-gray-300 mb-3">📋 Possible Conditions:</div>`;
-        responseText += `<div class="space-y-3">`;
-
-        data.possible_conditions.forEach((condition: any, idx: number) => {
-          const isObject = typeof condition === 'object';
-          const diseaseName = isObject ? condition.disease : condition;
-          const confidence = isObject && condition.confidence ? (condition.confidence * 100).toFixed(0) : null;
-          const evidence = isObject && condition.supporting_evidence ? condition.supporting_evidence : [];
-
-          responseText += `<div class="bg-gray-700/50 px-3 py-3 rounded-lg">`;
-          responseText += `<div class="flex items-start justify-between mb-2">`;
-          responseText += `<div class="font-medium text-white">${idx + 1}. ${diseaseName}</div>`;
-          if (confidence) {
-            responseText += `<div class="text-xs font-semibold px-2 py-1 bg-blue-600 text-white rounded-full">${confidence}%</div>`;
-          }
-          responseText += `</div>`;
-
-          // Supporting Evidence
-          if (evidence.length > 0) {
-            responseText += `<div class="text-xs text-gray-400 space-y-1 ml-4">`;
-            evidence.forEach((ev: string) => {
-              responseText += `<div class="flex items-start gap-1.5">`;
-              responseText += `<span class="text-blue-400 mt-0.5">•</span>`;
-              responseText += `<span>${ev}</span>`;
-              responseText += `</div>`;
-            });
-            responseText += `</div>`;
-          }
+        responseText += `<div class="mt-4">`;
+        responseText += `<div class="text-sm font-semibold text-gray-300 mb-2">📋 Possible Conditions:</div>`;
+        responseText += `<div class="grid gap-2">`;
+        data.possible_conditions.slice(0, 3).forEach((condition: any, idx: number) => {
+          const diseaseName = typeof condition === 'string' ? condition : condition.disease;
+          const confidence = typeof condition === 'object' && condition.confidence 
+            ? ` - ${Math.round(condition.confidence * 100)}% probability` 
+            : '';
+          const evidence = typeof condition === 'object' && condition.supporting_evidence && condition.supporting_evidence.length > 0
+            ? `<div class="text-xs text-gray-400 mt-1">💡 Based on: ${condition.supporting_evidence.join(', ')}</div>`
+            : '';
+          
+          responseText += `<div class="bg-gray-700/50 px-3 py-2 rounded-lg text-sm text-gray-200">`;
+          responseText += `${idx + 1}. ${diseaseName}${confidence}`;
+          responseText += evidence;
           responseText += `</div>`;
         });
         responseText += `</div></div>`;
       }
-
-      // Ruled Out Conditions
-      if (data.ruled_out_conditions && data.ruled_out_conditions.length > 0) {
-        responseText += `<div class="bg-gray-800/50 px-4 py-3 rounded-lg">`;
-        responseText += `<div class="text-sm font-semibold text-gray-300 mb-2">❌ Ruled Out:</div>`;
-        responseText += `<div class="space-y-1.5">`;
-        data.ruled_out_conditions.forEach((ruled: any) => {
-          responseText += `<div class="text-xs text-gray-400 flex items-start gap-2">`;
-          responseText += `<span class="text-red-400">✗</span>`;
-          responseText += `<span><strong class="text-gray-300">${ruled.condition}</strong> - ${ruled.reason}</span>`;
-          responseText += `</div>`;
-        });
-        responseText += `</div></div>`;
-      }
-
-      // Recommendations
+      
       if (data.recommendations && data.recommendations.length > 0) {
-        responseText += `<div class="bg-gray-800/50 px-4 py-3 rounded-lg">`;
+        responseText += `<div class="mt-4">`;
         responseText += `<div class="text-sm font-semibold text-gray-300 mb-2">✅ Recommendations:</div>`;
         responseText += `<div class="space-y-2">`;
-        data.recommendations.forEach((rec: string) => {
+        data.recommendations.forEach((rec: string, idx: number) => {
           responseText += `<div class="flex items-start gap-2 text-sm text-gray-200">`;
           responseText += `<span class="text-green-400 mt-0.5">✓</span>`;
           responseText += `<span>${rec}</span>`;
@@ -330,77 +339,28 @@ const Dashboard: React.FC = () => {
         });
         responseText += `</div></div>`;
       }
-
-      // Follow-up Questions
-      if (data.follow_up_questions && data.follow_up_questions.length > 0) {
-        responseText += `<div class="bg-blue-900/30 border border-blue-700/50 px-4 py-3 rounded-lg">`;
-        responseText += `<div class="text-sm font-semibold text-blue-300 mb-2">❓ To Better Assess:</div>`;
-        responseText += `<div class="space-y-1.5">`;
-        data.follow_up_questions.forEach((q: string) => {
-          responseText += `<div class="text-sm text-blue-200">${q}</div>`;
-        });
-        responseText += `</div></div>`;
-      }
-
-      // Nearby Hospitals/Clinics
+      
+      // Display nearby hospitals (backend sends 'nearby_hospitals')
       if (data.nearby_hospitals && data.nearby_hospitals.length > 0) {
-        responseText += `<div class="bg-green-900/20 border border-green-700/50 px-4 py-3 rounded-lg">`;
-        responseText += `<div class="text-sm font-semibold text-green-300 mb-3">🏥 Nearby Medical Facilities:</div>`;
-        responseText += `<div class="space-y-2.5">`;
+        responseText += `<div class="mt-4">`;
+        responseText += `<div class="text-sm font-semibold text-gray-300 mb-2">🏥 Nearby Healthcare Facilities:</div>`;
+        responseText += `<div class="space-y-2">`;
         data.nearby_hospitals.forEach((hospital: any) => {
-          responseText += `<div class="bg-gray-800/50 px-3 py-2.5 rounded-lg">`;
-          responseText += `<div class="flex items-start justify-between mb-1.5">`;
-          responseText += `<div class="font-medium text-white text-sm">${hospital.name}</div>`;
-          if (hospital.distance) {
-            responseText += `<div class="text-xs font-semibold px-2 py-0.5 bg-green-600 text-white rounded-full">${hospital.distance}</div>`;
-          }
-          responseText += `</div>`;
-          if (hospital.address) {
-            responseText += `<div class="text-xs text-gray-400 mb-2">${hospital.address}</div>`;
-          }
-          responseText += `<div class="flex items-center gap-3 text-xs">`;
-          if (hospital.rating) {
-            responseText += `<div class="flex items-center gap-1 text-yellow-400">`;
-            responseText += `<span>⭐</span><span>${hospital.rating.toFixed(1)}</span>`;
-            responseText += `</div>`;
-          }
-          if (hospital.is_open !== null && hospital.is_open !== undefined) {
-            const openStatus = hospital.is_open ? 'Open Now' : 'Closed';
-            const openColor = hospital.is_open ? 'text-green-400' : 'text-red-400';
-            responseText += `<div class="${openColor}">● ${openStatus}</div>`;
-          }
+          responseText += `<div class="bg-gray-700/50 px-3 py-2 rounded-lg text-sm">`;
+          responseText += `<div class="font-medium text-blue-400">${hospital.name}</div>`;
+          responseText += `<div class="text-xs text-gray-400">${hospital.address}</div>`;
+          responseText += `<div class="text-xs text-green-400 mt-1">📍 ${hospital.distance}</div>`;
           if (hospital.phone) {
-            responseText += `<div class="text-blue-400">📞 ${hospital.phone}</div>`;
+            responseText += `<div class="text-xs text-gray-300 mt-1">📞 ${hospital.phone}</div>`;
           }
-          responseText += `</div>`;
-          // Add Google Maps link
           if (hospital.maps_url) {
-            responseText += `<div class="mt-2">`;
-            responseText += `<a href="${hospital.maps_url}" target="_blank" rel="noopener noreferrer" class="inline-flex items-center gap-1 text-xs text-blue-400 hover:text-blue-300 transition-colors">`;
-            responseText += `<span>📍</span><span>Get Directions</span>`;
-            responseText += `</a>`;
-            responseText += `</div>`;
+            responseText += `<a href="${hospital.maps_url}" target="_blank" class="text-xs text-purple-400 hover:text-purple-300 mt-1 inline-block">🗺️ Get Directions</a>`;
           }
           responseText += `</div>`;
         });
         responseText += `</div></div>`;
       }
-
-      // When to Seek Care
-      if (data.when_to_seek_care) {
-        responseText += `<div class="bg-yellow-900/20 border border-yellow-700/50 px-4 py-3 rounded-lg">`;
-        responseText += `<div class="text-sm font-semibold text-yellow-300 mb-1">⏰ When to Seek Care:</div>`;
-        responseText += `<div class="text-sm text-yellow-200">${data.when_to_seek_care}</div>`;
-        responseText += `</div>`;
-      }
-
-      // Disclaimer
-      if (data.disclaimer) {
-        responseText += `<div class="bg-yellow-900/20 border border-yellow-700/50 px-3 py-2 rounded-lg">`;
-        responseText += `<div class="text-xs text-yellow-200">${data.disclaimer}</div>`;
-        responseText += `</div>`;
-      }
-
+      
       responseText += `</div>`;
 
       const aiMessage: Message = {
@@ -412,14 +372,14 @@ const Dashboard: React.FC = () => {
       setMessages(prev => [...prev, aiMessage]);
     } catch (error: any) {
       console.error('Error getting AI assessment:', error);
-
+      
       let errorText = "I apologize, but I'm having trouble processing your request right now.\n\n";
-
+      
       if (error.message.includes('authentication')) {
         errorText += "🔐 Authentication Issue:\nYour session may have expired. Please try logging out and logging back in.\n\n";
       } else if (error.message.includes('Failed to fetch') || error.message.includes('NetworkError')) {
         errorText += "🔌 Connection Issue:\n";
-        errorText += "1. Make sure the backend server is running at http://127.0.0.1:8000\n";
+        errorText += `1. Make sure the backend server is running at ${API_BASE_URL.replace('/api', '')}\n`;
         errorText += "2. Check your internet connection\n\n";
         errorText += "To start the backend:\n";
         errorText += "cd backend/medaid && python manage.py runserver\n\n";
@@ -430,9 +390,9 @@ const Dashboard: React.FC = () => {
         errorText += "2. Ensure backend server is running\n";
         errorText += "3. Check browser console for detailed error\n\n";
       }
-
+      
       errorText += "For detailed medical assessment, try the dedicated consultation page.";
-
+      
       const errorMessage: Message = {
         id: (Date.now() + 1).toString(),
         text: errorText,
@@ -447,7 +407,7 @@ const Dashboard: React.FC = () => {
 
   const handleVoiceInput = () => {
     const SpeechRecognition = (window as any).webkitSpeechRecognition || (window as any).SpeechRecognition;
-
+    
     if (!SpeechRecognition) {
       alert('Speech recognition is not supported in your browser. Please use Chrome, Edge, or Safari.');
       return;
@@ -491,13 +451,13 @@ const Dashboard: React.FC = () => {
         alert('Please upload a PDF or image file (JPEG, PNG)');
         return;
       }
-
+      
       // Check file size (10MB limit)
       if (file.size > 10 * 1024 * 1024) {
         alert('File size must be less than 10MB');
         return;
       }
-
+      
       setUploadedFile(file);
       setInputMessage(`📎 ${file.name} - Describe your symptoms or concerns`);
     }
@@ -569,7 +529,7 @@ const Dashboard: React.FC = () => {
 
             {/* New Chat Button */}
             <div className="px-4 pt-5 pb-3">
-              <button
+              <button 
                 onClick={handleNewChat}
                 className="w-full bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-500 hover:to-purple-500 rounded-lg py-2.5 text-sm font-semibold flex items-center justify-center gap-2 transition-all shadow-lg shadow-blue-500/20"
               >
@@ -594,23 +554,23 @@ const Dashboard: React.FC = () => {
 
             {/* Navigation */}
             <nav className="flex-1 px-3 py-2 space-y-0.5 overflow-y-auto">
-              <NavItem
-                icon={Home}
-                label="Home"
+              <NavItem 
+                icon={Home} 
+                label="Home" 
                 active={activeNavItem === 'home'}
                 onClick={() => setActiveNavItem('home')}
                 theme={theme}
               />
-              <NavItem
-                icon={Brain}
-                label="Medical History Insights"
+              <NavItem 
+                icon={Brain} 
+                label="Medical History Insights" 
                 active={activeNavItem === 'insights'}
                 onClick={() => setActiveNavItem('insights')}
                 theme={theme}
               />
-              <NavItem
-                icon={Stethoscope}
-                label="Health Consultation"
+              <NavItem 
+                icon={Stethoscope} 
+                label="Health Consultation" 
                 active={activeNavItem === 'medication'}
                 onClick={() => setActiveNavItem('medication')}
                 theme={theme}
@@ -620,27 +580,32 @@ const Dashboard: React.FC = () => {
               {filteredChatHistory.length > 0 && (
                 <div className="pt-4 pb-2">
                   <div className="px-3 mb-2">
-                    <h3 className={`text-xs font-medium uppercase tracking-wider ${theme === 'dark' ? 'text-gray-500' : 'text-gray-600'
-                      }`}>
+                    <h3 className={`text-xs font-medium uppercase tracking-wider ${
+                      theme === 'dark' ? 'text-gray-500' : 'text-gray-600'
+                    }`}>
                       Recent Chats
                     </h3>
                   </div>
                   {filteredChatHistory.map((chat) => (
                     <button
                       key={chat.id}
-                      className={`w-full px-3 py-2 rounded-lg cursor-pointer transition-colors group text-left ${theme === 'dark' ? 'hover:bg-gray-800/50' : 'hover:bg-gray-100'
-                        }`}
+                      className={`w-full px-3 py-2 rounded-lg cursor-pointer transition-colors group text-left ${
+                        theme === 'dark' ? 'hover:bg-gray-800/50' : 'hover:bg-gray-100'
+                      }`}
                     >
                       <div className="flex items-center gap-2 mb-1">
-                        <MessageSquare className={`w-3.5 h-3.5 ${theme === 'dark' ? 'text-gray-500' : 'text-gray-500'
-                          }`} />
-                        <p className={`text-sm font-medium truncate flex-1 ${theme === 'dark' ? 'text-gray-300 group-hover:text-white' : 'text-gray-700 group-hover:text-gray-900'
-                          }`}>
+                        <MessageSquare className={`w-3.5 h-3.5 ${
+                          theme === 'dark' ? 'text-gray-500' : 'text-gray-500'
+                        }`} />
+                        <p className={`text-sm font-medium truncate flex-1 ${
+                          theme === 'dark' ? 'text-gray-300 group-hover:text-white' : 'text-gray-700 group-hover:text-gray-900'
+                        }`}>
                           {chat.title}
                         </p>
                       </div>
-                      <p className={`text-xs truncate pl-5 ${theme === 'dark' ? 'text-gray-500' : 'text-gray-600'
-                        }`}>{chat.preview}</p>
+                      <p className={`text-xs truncate pl-5 ${
+                        theme === 'dark' ? 'text-gray-500' : 'text-gray-600'
+                      }`}>{chat.preview}</p>
                     </button>
                   ))}
                 </div>
@@ -649,23 +614,24 @@ const Dashboard: React.FC = () => {
               {/* OTHER Section */}
               <div className="pt-6 pb-2">
                 <div className="px-3 mb-2">
-                  <h3 className={`text-xs font-medium uppercase tracking-wider ${theme === 'dark' ? 'text-gray-500' : 'text-gray-600'
-                    }`}>
+                  <h3 className={`text-xs font-medium uppercase tracking-wider ${
+                    theme === 'dark' ? 'text-gray-500' : 'text-gray-600'
+                  }`}>
                     Other
                   </h3>
                 </div>
               </div>
-
-              <NavItem
-                icon={BarChart3}
-                label="Reports"
+              
+              <NavItem 
+                icon={BarChart3} 
+                label="Reports" 
                 active={activeNavItem === 'reports'}
                 onClick={() => setActiveNavItem('reports')}
                 theme={theme}
               />
-              <NavItem
-                icon={Activity}
-                label="Patient Monitoring"
+              <NavItem 
+                icon={Activity} 
+                label="Patient Monitoring" 
                 active={activeNavItem === 'monitoring'}
                 onClick={() => setActiveNavItem('monitoring')}
                 theme={theme}
@@ -694,7 +660,7 @@ const Dashboard: React.FC = () => {
               </div>
 
               {/* User Profile */}
-              <div
+              <div 
                 onClick={() => setShowProfileCard(true)}
                 className="flex items-center gap-3 p-2.5 rounded-lg hover:bg-gray-800/50 cursor-pointer transition-colors group border border-gray-800/30"
               >
@@ -720,8 +686,8 @@ const Dashboard: React.FC = () => {
 
       {/* Main Content */}
       {activeNavItem === 'insights' && !selectedReportId ? (
-        <PatientReports
-          theme={theme}
+        <PatientReports 
+          theme={theme} 
           onBack={() => setActiveNavItem('home')}
           onViewDetails={(reportId) => setSelectedReportId(reportId)}
         />
@@ -738,231 +704,237 @@ const Dashboard: React.FC = () => {
           user={user}
         />
       ) : (
-        <div className="flex-1 flex flex-col">{/* Header */}
-          <header className={`h-16 border-b ${theme === 'dark' ? 'border-gray-800 bg-gray-900/50' : 'border-gray-200 bg-white/50'} flex items-center justify-between px-6 backdrop-blur-xl`}>
-            <div className="flex items-center gap-3">
-              <button
-                onClick={() => setSidebarOpen(!sidebarOpen)}
-                className={`p-2 ${theme === 'dark' ? 'hover:bg-gray-800' : 'hover:bg-gray-100'} rounded-lg transition-colors`}
-              >
-                <Menu className={`w-5 h-5 ${theme === 'dark' ? 'text-white' : 'text-gray-900'}`} />
-              </button>
-              <div className={`flex items-center gap-2 px-3 py-1.5 ${theme === 'dark' ? 'bg-gray-800/50 border-gray-700' : 'bg-blue-50 border-blue-200'} rounded-lg border`}>
-                <Sparkles className="w-4 h-4 text-blue-400" />
-                <span className={`text-sm font-medium ${theme === 'dark' ? 'text-white' : 'text-gray-900'}`}>AI Assistant</span>
-              </div>
+      <div className="flex-1 flex flex-col">{/* Header */}
+        <header className={`h-16 border-b ${theme === 'dark' ? 'border-gray-800 bg-gray-900/50' : 'border-gray-200 bg-white/50'} flex items-center justify-between px-6 backdrop-blur-xl`}>
+          <div className="flex items-center gap-3">
+            <button
+              onClick={() => setSidebarOpen(!sidebarOpen)}
+              className={`p-2 ${theme === 'dark' ? 'hover:bg-gray-800' : 'hover:bg-gray-100'} rounded-lg transition-colors`}
+            >
+              <Menu className={`w-5 h-5 ${theme === 'dark' ? 'text-white' : 'text-gray-900'}`} />
+            </button>
+            <div className={`flex items-center gap-2 px-3 py-1.5 ${theme === 'dark' ? 'bg-gray-800/50 border-gray-700' : 'bg-blue-50 border-blue-200'} rounded-lg border`}>
+              <Sparkles className="w-4 h-4 text-blue-400" />
+              <span className={`text-sm font-medium ${theme === 'dark' ? 'text-white' : 'text-gray-900'}`}>AI Assistant</span>
             </div>
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => setShowShareModal(true)}
-                className={`p-2 ${theme === 'dark' ? 'hover:bg-gray-800' : 'hover:bg-gray-100'} rounded-lg transition-colors`}
-                title="Share"
-              >
-                <Share2 className={`w-5 h-5 ${theme === 'dark' ? 'text-white' : 'text-gray-900'}`} />
-              </button>
-              <button
-                onClick={() => setShowSettings(true)}
-                className={`p-2 ${theme === 'dark' ? 'hover:bg-gray-800' : 'hover:bg-gray-100'} rounded-lg transition-colors`}
-                title="Settings"
-              >
-                <Settings className={`w-5 h-5 ${theme === 'dark' ? 'text-white' : 'text-gray-900'}`} />
-              </button>
-            </div>
-          </header>
+          </div>
+          <div className="flex items-center gap-2">
+            <button 
+              onClick={() => setShowShareModal(true)}
+              className={`p-2 ${theme === 'dark' ? 'hover:bg-gray-800' : 'hover:bg-gray-100'} rounded-lg transition-colors`}
+              title="Share"
+            >
+              <Share2 className={`w-5 h-5 ${theme === 'dark' ? 'text-white' : 'text-gray-900'}`} />
+            </button>
+            <button 
+              onClick={() => setShowSettings(true)}
+              className={`p-2 ${theme === 'dark' ? 'hover:bg-gray-800' : 'hover:bg-gray-100'} rounded-lg transition-colors`}
+              title="Settings"
+            >
+              <Settings className={`w-5 h-5 ${theme === 'dark' ? 'text-white' : 'text-gray-900'}`} />
+            </button>
+          </div>
+        </header>
 
-          {/* Chat Area */}
-          <div className="flex-1 overflow-y-auto">
-            {messages.length === 0 ? (
-              <div className="h-full flex flex-col items-center justify-center px-6">
-                {/* Welcome Screen */}
+        {/* Chat Area */}
+        <div className="flex-1 overflow-y-auto">
+          {messages.length === 0 ? (
+            <div className="h-full flex flex-col items-center justify-center px-6">
+              {/* Welcome Screen */}
+              <motion.div
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="text-center max-w-2xl"
+              >
+                <div className="w-24 h-24 mx-auto mb-6 bg-gradient-to-br from-blue-500 via-purple-500 to-pink-500 rounded-full flex items-center justify-center shadow-2xl">
+                  <Heart className="w-12 h-12 text-white" />
+                </div>
+                <h1 className="text-4xl font-bold mb-3">
+                  {getGreeting()}, {user?.first_name || 'Doctor'}.
+                </h1>
+                <p className="text-xl text-gray-400 mb-12">
+                  Can I help you with anything?
+                </p>
+
+                {/* Quick Actions */}
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mt-8 max-w-4xl mx-auto">
+                  {quickActions.map((action, index) => (
+                    <motion.div
+                      key={action.title}
+                      initial={{ opacity: 0, y: 20 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      transition={{ delay: index * 0.1 }}
+                      onClick={action.action}
+                      className={`${theme === 'dark' ? 'bg-gray-800/50 hover:bg-gray-800 border-gray-700 hover:border-gray-600' : 'bg-white hover:bg-gray-50 border-gray-200 hover:border-gray-300'} backdrop-blur-xl border rounded-2xl p-6 cursor-pointer transition-all group aspect-square flex flex-col justify-center items-center text-center`}
+                    >
+                      <div className={`w-16 h-16 bg-gradient-to-br ${action.color} rounded-2xl flex items-center justify-center mb-4 group-hover:scale-110 transition-transform shadow-lg`}>
+                        <action.icon className="w-8 h-8 text-white" />
+                      </div>
+                      <h3 className={`text-lg font-bold mb-2 ${theme === 'dark' ? 'text-white' : 'text-gray-900'}`}>{action.title}</h3>
+                      <p className={`text-sm leading-relaxed ${theme === 'dark' ? 'text-gray-400' : 'text-gray-600'}`}>{action.description}</p>
+                    </motion.div>
+                  ))}
+                </div>
+              </motion.div>
+            </div>
+          ) : (
+            <div className="max-w-4xl mx-auto px-6 py-8 space-y-6">
+              {messages.map((message) => (
                 <motion.div
+                  key={message.id}
                   initial={{ opacity: 0, y: 20 }}
                   animate={{ opacity: 1, y: 0 }}
-                  className="text-center max-w-2xl"
+                  className={`flex gap-4 ${message.sender === 'user' ? 'justify-end' : ''}`}
                 >
-                  <div className="w-24 h-24 mx-auto mb-6 bg-gradient-to-br from-blue-500 via-purple-500 to-pink-500 rounded-full flex items-center justify-center shadow-2xl">
-                    <Heart className="w-12 h-12 text-white" />
-                  </div>
-                  <h1 className="text-4xl font-bold mb-3">
-                    {getGreeting()}, {user?.first_name || 'Doctor'}.
-                  </h1>
-                  <p className="text-xl text-gray-400 mb-12">
-                    Can I help you with anything?
-                  </p>
-
-                  {/* Quick Actions */}
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mt-8 max-w-4xl mx-auto">
-                    {quickActions.map((action, index) => (
-                      <motion.div
-                        key={action.title}
-                        initial={{ opacity: 0, y: 20 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        transition={{ delay: index * 0.1 }}
-                        onClick={action.action}
-                        className={`${theme === 'dark' ? 'bg-gray-800/50 hover:bg-gray-800 border-gray-700 hover:border-gray-600' : 'bg-white hover:bg-gray-50 border-gray-200 hover:border-gray-300'} backdrop-blur-xl border rounded-2xl p-6 cursor-pointer transition-all group aspect-square flex flex-col justify-center items-center text-center`}
-                      >
-                        <div className={`w-16 h-16 bg-gradient-to-br ${action.color} rounded-2xl flex items-center justify-center mb-4 group-hover:scale-110 transition-transform shadow-lg`}>
-                          <action.icon className="w-8 h-8 text-white" />
-                        </div>
-                        <h3 className={`text-lg font-bold mb-2 ${theme === 'dark' ? 'text-white' : 'text-gray-900'}`}>{action.title}</h3>
-                        <p className={`text-sm leading-relaxed ${theme === 'dark' ? 'text-gray-400' : 'text-gray-600'}`}>{action.description}</p>
-                      </motion.div>
-                    ))}
-                  </div>
-                </motion.div>
-              </div>
-            ) : (
-              <div className="max-w-4xl mx-auto px-6 py-8 space-y-6">
-                {messages.map((message) => (
-                  <motion.div
-                    key={message.id}
-                    initial={{ opacity: 0, y: 20 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    className={`flex gap-4 ${message.sender === 'user' ? 'justify-end' : ''}`}
-                  >
-                    {message.sender === 'ai' && (
-                      <div className="w-10 h-10 bg-gradient-to-br from-blue-500 to-cyan-400 rounded-xl flex items-center justify-center flex-shrink-0">
-                        <Sparkles className="w-5 h-5 text-white" />
-                      </div>
-                    )}
-                    <div
-                      className={`max-w-2xl px-4 py-3 rounded-2xl ${message.sender === 'user'
+                  {message.sender === 'ai' && (
+                    <div className="w-10 h-10 bg-gradient-to-br from-blue-500 to-cyan-400 rounded-xl flex items-center justify-center flex-shrink-0">
+                      <Sparkles className="w-5 h-5 text-white" />
+                    </div>
+                  )}
+                  <div
+                    className={`max-w-2xl px-4 py-3 rounded-2xl ${
+                      message.sender === 'user'
                         ? 'bg-blue-600 text-white'
                         : theme === 'dark' ? 'bg-gray-800 text-gray-100' : 'bg-gray-100 text-gray-900'
-                        }`}
-                    >
-                      {message.sender === 'ai' && message.text.includes('<div') ? (
-                        <div
-                          className="text-sm leading-relaxed"
-                          dangerouslySetInnerHTML={{ __html: message.text }}
-                        />
-                      ) : (
-                        <p className="text-sm leading-relaxed whitespace-pre-line">{message.text}</p>
-                      )}
-                    </div>
-                    {message.sender === 'user' && (
-                      <div className="w-10 h-10 bg-gradient-to-br from-blue-500 to-purple-500 rounded-full flex items-center justify-center flex-shrink-0 font-semibold">
-                        {user?.first_name?.[0] || 'U'}
-                      </div>
+                    }`}
+                  >
+                    {message.sender === 'ai' && message.text.includes('<div') ? (
+                      <div 
+                        className="text-sm leading-relaxed"
+                        dangerouslySetInnerHTML={{ __html: message.text }}
+                      />
+                    ) : (
+                      <p className="text-sm leading-relaxed whitespace-pre-line">{message.text}</p>
                     )}
-                  </motion.div>
-                ))}
-                {loading && (
-                  <div className="flex gap-4">
-                    <div className="w-10 h-10 bg-gradient-to-br from-blue-500 to-cyan-400 rounded-xl flex items-center justify-center">
-                      <Sparkles className="w-5 h-5 text-white animate-pulse" />
+                  </div>
+                  {message.sender === 'user' && (
+                    <div className="w-10 h-10 bg-gradient-to-br from-blue-500 to-purple-500 rounded-full flex items-center justify-center flex-shrink-0 font-semibold">
+                      {user?.first_name?.[0] || 'U'}
                     </div>
-                    <div className={`${theme === 'dark' ? 'bg-gray-800' : 'bg-gray-100'} px-4 py-3 rounded-2xl`}>
-                      <div className="flex gap-1">
-                        <div className={`w-2 h-2 ${theme === 'dark' ? 'bg-gray-500' : 'bg-gray-400'} rounded-full animate-bounce`} style={{ animationDelay: '0ms' }}></div>
-                        <div className={`w-2 h-2 ${theme === 'dark' ? 'bg-gray-500' : 'bg-gray-400'} rounded-full animate-bounce`} style={{ animationDelay: '150ms' }}></div>
-                        <div className={`w-2 h-2 ${theme === 'dark' ? 'bg-gray-500' : 'bg-gray-400'} rounded-full animate-bounce`} style={{ animationDelay: '300ms' }}></div>
-                      </div>
+                  )}
+                </motion.div>
+              ))}
+              {loading && (
+                <div className="flex gap-4">
+                  <div className="w-10 h-10 bg-gradient-to-br from-blue-500 to-cyan-400 rounded-xl flex items-center justify-center">
+                    <Sparkles className="w-5 h-5 text-white animate-pulse" />
+                  </div>
+                  <div className={`${theme === 'dark' ? 'bg-gray-800' : 'bg-gray-100'} px-4 py-3 rounded-2xl`}>
+                    <div className="flex gap-1">
+                      <div className={`w-2 h-2 ${theme === 'dark' ? 'bg-gray-500' : 'bg-gray-400'} rounded-full animate-bounce`} style={{ animationDelay: '0ms' }}></div>
+                      <div className={`w-2 h-2 ${theme === 'dark' ? 'bg-gray-500' : 'bg-gray-400'} rounded-full animate-bounce`} style={{ animationDelay: '150ms' }}></div>
+                      <div className={`w-2 h-2 ${theme === 'dark' ? 'bg-gray-500' : 'bg-gray-400'} rounded-full animate-bounce`} style={{ animationDelay: '300ms' }}></div>
                     </div>
                   </div>
-                )}
-              </div>
-            )}
-          </div>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
 
-          {/* Input Area */}
-          <div className={`border-t ${theme === 'dark' ? 'border-gray-800/50 bg-[#0a0a0a]' : 'border-gray-200 bg-white'} p-6`}>
-            <div className="max-w-4xl mx-auto">
-              {/* Location Input */}
-              <div className="mb-4">
-                <label className={`text-xs font-medium ${theme === 'dark' ? 'text-gray-400' : 'text-gray-600'} mb-2 block`}>
-                  📍 Your Location (City or Pincode) - Optional, for nearby hospitals
-                </label>
-                <input
-                  type="text"
-                  value={userLocation}
-                  onChange={(e) => setUserLocation(e.target.value)}
-                  placeholder="e.g., Pune, Mumbai, 411001"
-                  className={`w-full ${theme === 'dark' ? 'bg-gray-800/50 border-gray-700 text-white placeholder:text-gray-500' : 'bg-gray-50 border-gray-200 text-gray-900 placeholder:text-gray-400'} border rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-all`}
-                />
-              </div>
-
-              {/* Purple Gradient Border Container */}
-              <div className="relative p-[2px] rounded-2xl bg-gradient-to-r from-purple-600 via-blue-500 to-purple-600 bg-[length:200%_100%] animate-[shimmer_3s_linear_infinite]">
-                <style>{`
+        {/* Input Area */}
+        <div className={`border-t ${theme === 'dark' ? 'border-gray-800/50 bg-[#0a0a0a]' : 'border-gray-200 bg-white'} p-6`}>
+          <div className="max-w-4xl mx-auto">
+            {/* Purple Gradient Border Container */}
+            <div className="relative p-[2px] rounded-2xl bg-gradient-to-r from-purple-600 via-blue-500 to-purple-600 bg-[length:200%_100%] animate-[shimmer_3s_linear_infinite]">
+              <style>{`
                 @keyframes shimmer {
                   0% { background-position: 200% 0; }
                   100% { background-position: -200% 0; }
                 }
               `}</style>
-
-                <div className={`relative ${theme === 'dark' ? 'bg-[#1a1a1a]' : 'bg-white'} rounded-2xl`}>
-                  <div className="flex items-center gap-3 px-4 py-3.5">
-                    {/* Left Actions */}
-                    <button
-                      onClick={() => fileInputRef.current?.click()}
-                      className={`p-2 ${theme === 'dark' ? 'hover:bg-gray-800/50' : 'hover:bg-gray-100'} rounded-lg transition-colors flex-shrink-0`}
-                      title="Upload medical document"
-                    >
-                      <Plus className={`w-5 h-5 ${uploadedFile ? 'text-green-400' : theme === 'dark' ? 'text-gray-400' : 'text-gray-600'}`} />
-                    </button>
-                    <input
-                      ref={fileInputRef}
-                      type="file"
-                      accept=".pdf,image/*"
-                      onChange={handleFileUpload}
-                      className="hidden"
-                    />
-                    <button
-                      onClick={() => fileInputRef.current?.click()}
-                      className={`p-2 ${theme === 'dark' ? 'hover:bg-gray-800/50' : 'hover:bg-gray-100'} rounded-lg transition-colors flex-shrink-0`}
-                      title="Upload image"
-                    >
-                      <ImageIcon className={`w-5 h-5 ${uploadedFile ? 'text-green-400' : theme === 'dark' ? 'text-gray-400' : 'text-gray-600'}`} />
-                    </button>
-
-                    {/* Input */}
-                    <input
-                      type="text"
-                      value={inputMessage}
-                      onChange={(e) => setInputMessage(e.target.value)}
-                      onKeyPress={(e) => e.key === 'Enter' && handleSendMessage()}
-                      placeholder="Describe your symptoms, upload reports, or ask anything..."
-                      className={`flex-1 bg-transparent text-sm ${theme === 'dark' ? 'text-white placeholder:text-gray-500' : 'text-gray-900 placeholder:text-gray-400'} focus:outline-none`}
-                    />
-
-                    {/* Right Actions */}
-                    <button
-                      onClick={handleVoiceInput}
-                      className={`p-2 ${isListening ? 'bg-red-500/20 animate-pulse' : theme === 'dark' ? 'hover:bg-gray-800/50' : 'hover:bg-gray-100'} rounded-lg transition-colors flex-shrink-0`}
-                      title="Voice input"
-                    >
-                      <Mic className={`w-5 h-5 ${isListening ? 'text-red-400' : theme === 'dark' ? 'text-gray-400' : 'text-gray-600'}`} />
-                    </button>
-                    <button
-                      onClick={handleSendMessage}
-                      disabled={!inputMessage.trim() && !uploadedFile}
-                      className="p-2 bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-500 hover:to-blue-500 rounded-lg transition-all disabled:opacity-50 disabled:cursor-not-allowed flex-shrink-0"
-                    >
-                      <Send className="w-5 h-5 text-white" />
-                    </button>
-
-                    {/* AI Features Button */}
-                    <button className={`flex items-center gap-2 px-3 py-2 ${theme === 'dark' ? 'bg-gray-800/50 hover:bg-gray-800' : 'bg-gray-100 hover:bg-gray-200'} rounded-lg transition-colors flex-shrink-0`}>
-                      <svg className="w-4 h-4 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
-                      </svg>
-                      <span className={`text-xs font-medium ${theme === 'dark' ? 'text-gray-300' : 'text-gray-700'}`}>AI</span>
-                    </button>
-                  </div>
+              
+              <div className={`relative ${theme === 'dark' ? 'bg-[#1a1a1a]' : 'bg-white'} rounded-2xl`}>
+                {/* Location inputs row */}
+                <div className="flex gap-2 px-4 pt-3">
+                  <input
+                    type="text"
+                    value={userLocation}
+                    onChange={(e) => setUserLocation(e.target.value)}
+                    placeholder="📍 City (e.g., Mumbai)"
+                    className={`flex-1 px-3 py-2 text-sm ${theme === 'dark' ? 'bg-gray-800/50 text-white placeholder:text-gray-500' : 'bg-gray-100 text-gray-900 placeholder:text-gray-400'} rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500/50`}
+                  />
+                  <input
+                    type="text"
+                    value={userPincode}
+                    onChange={(e) => setUserPincode(e.target.value)}
+                    placeholder="Pincode"
+                    maxLength={6}
+                    className={`w-28 px-3 py-2 text-sm ${theme === 'dark' ? 'bg-gray-800/50 text-white placeholder:text-gray-500' : 'bg-gray-100 text-gray-900 placeholder:text-gray-400'} rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500/50`}
+                  />
+                </div>
+                
+                <div className="flex items-center gap-3 px-4 py-3.5">
+                  {/* Left Actions */}
+                  <button 
+                    onClick={() => fileInputRef.current?.click()}
+                    className={`p-2 ${theme === 'dark' ? 'hover:bg-gray-800/50' : 'hover:bg-gray-100'} rounded-lg transition-colors flex-shrink-0`}
+                    title="Upload medical document"
+                  >
+                    <Plus className={`w-5 h-5 ${uploadedFile ? 'text-green-400' : theme === 'dark' ? 'text-gray-400' : 'text-gray-600'}`} />
+                  </button>
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept=".pdf,image/*"
+                    onChange={handleFileUpload}
+                    className="hidden"
+                  />
+                  <button 
+                    onClick={() => fileInputRef.current?.click()}
+                    className={`p-2 ${theme === 'dark' ? 'hover:bg-gray-800/50' : 'hover:bg-gray-100'} rounded-lg transition-colors flex-shrink-0`}
+                    title="Upload image"
+                  >
+                    <ImageIcon className={`w-5 h-5 ${uploadedFile ? 'text-green-400' : theme === 'dark' ? 'text-gray-400' : 'text-gray-600'}`} />
+                  </button>
+                  
+                  {/* Input */}
+                  <input
+                    type="text"
+                    value={inputMessage}
+                    onChange={(e) => setInputMessage(e.target.value)}
+                    onKeyPress={(e) => e.key === 'Enter' && handleSendMessage()}
+                    placeholder="Describe your symptoms, upload reports, or ask anything..."
+                    className={`flex-1 bg-transparent text-sm ${theme === 'dark' ? 'text-white placeholder:text-gray-500' : 'text-gray-900 placeholder:text-gray-400'} focus:outline-none`}
+                  />
+                  
+                  {/* Right Actions */}
+                  <button 
+                    onClick={handleVoiceInput}
+                    className={`p-2 ${isListening ? 'bg-red-500/20 animate-pulse' : theme === 'dark' ? 'hover:bg-gray-800/50' : 'hover:bg-gray-100'} rounded-lg transition-colors flex-shrink-0`}
+                    title="Voice input"
+                  >
+                    <Mic className={`w-5 h-5 ${isListening ? 'text-red-400' : theme === 'dark' ? 'text-gray-400' : 'text-gray-600'}`} />
+                  </button>
+                  <button
+                    onClick={handleSendMessage}
+                    disabled={!inputMessage.trim() && !uploadedFile}
+                    className="p-2 bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-500 hover:to-blue-500 rounded-lg transition-all disabled:opacity-50 disabled:cursor-not-allowed flex-shrink-0"
+                  >
+                    <Send className="w-5 h-5 text-white" />
+                  </button>
+                  
+                  {/* AI Features Button */}
+                  <button className={`flex items-center gap-2 px-3 py-2 ${theme === 'dark' ? 'bg-gray-800/50 hover:bg-gray-800' : 'bg-gray-100 hover:bg-gray-200'} rounded-lg transition-colors flex-shrink-0`}>
+                    <svg className="w-4 h-4 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+                    </svg>
+                    <span className={`text-xs font-medium ${theme === 'dark' ? 'text-gray-300' : 'text-gray-700'}`}>AI</span>
+                  </button>
                 </div>
               </div>
-
-              <div className="flex items-center justify-center gap-4 mt-4 text-xs text-gray-500">
-                <button className="hover:text-gray-400 transition-colors">About</button>
-                <span>•</span>
-                <button className="hover:text-gray-400 transition-colors">Privacy</button>
-                <span>•</span>
-                <button className="hover:text-gray-400 transition-colors">Terms</button>
-              </div>
+            </div>
+            
+            <div className="flex items-center justify-center gap-4 mt-4 text-xs text-gray-500">
+              <button className="hover:text-gray-400 transition-colors">About</button>
+              <span>•</span>
+              <button className="hover:text-gray-400 transition-colors">Privacy</button>
+              <span>•</span>
+              <button className="hover:text-gray-400 transition-colors">Terms</button>
             </div>
           </div>
         </div>
+      </div>
       )}
 
       {/* Profile Card Modal */}
@@ -995,7 +967,7 @@ const Dashboard: React.FC = () => {
                     </svg>
                   </button>
                 </div>
-
+                
                 {/* Profile Image */}
                 <div className="flex justify-center">
                   <div className="w-24 h-24 bg-gradient-to-br from-blue-400 to-purple-500 rounded-full flex items-center justify-center text-3xl font-bold text-white shadow-xl border-4 border-gray-900">
@@ -1009,7 +981,7 @@ const Dashboard: React.FC = () => {
                 {/* Name and Status */}
                 <div className="text-center mb-6">
                   <h2 className="text-xl font-bold text-white mb-1">
-                    {user?.first_name && user?.last_name
+                    {user?.first_name && user?.last_name 
                       ? `${user.first_name} ${user.last_name}`
                       : user?.first_name || user?.email || 'User'}
                   </h2>
@@ -1047,7 +1019,7 @@ const Dashboard: React.FC = () => {
                     <div className="flex-1 min-w-0">
                       <p className="text-xs text-gray-400">Full Name</p>
                       <p className="text-sm font-medium text-white truncate">
-                        {user?.first_name && user?.last_name
+                        {user?.first_name && user?.last_name 
                           ? `${user.first_name} ${user.last_name}`
                           : user?.first_name || 'Not provided'}
                       </p>
@@ -1077,7 +1049,7 @@ const Dashboard: React.FC = () => {
 
                 {/* Action Buttons */}
                 <div className="space-y-3">
-                  <button
+                  <button 
                     onClick={() => {
                       setShowProfileCard(false);
                       setShowProfileSettings(true);
@@ -1087,7 +1059,7 @@ const Dashboard: React.FC = () => {
                     <User className="w-4 h-4" />
                     Edit Profile
                   </button>
-                  <button
+                  <button 
                     onClick={() => {
                       setShowProfileCard(false);
                       setShowMedicalHistory(true);
@@ -1153,7 +1125,7 @@ const Dashboard: React.FC = () => {
                     <div className="py-3 border-b border-gray-800">
                       <div className="flex items-center justify-between mb-2">
                         <label className="text-sm text-gray-400">Full Name</label>
-                        <button
+                        <button 
                           onClick={() => setEditingField(editingField === 'fullName' ? null : 'fullName')}
                           className="text-blue-400 hover:text-blue-300 text-sm font-medium transition-colors"
                         >
@@ -1163,7 +1135,7 @@ const Dashboard: React.FC = () => {
                       <input
                         type="text"
                         value={editingField === 'fullName' ? profileData.fullName : (user?.first_name || '')}
-                        onChange={(e) => setProfileData({ ...profileData, fullName: e.target.value })}
+                        onChange={(e) => setProfileData({...profileData, fullName: e.target.value})}
                         placeholder="Enter your full name"
                         className="w-full bg-gray-800/50 border border-gray-700 rounded-lg px-4 py-2 text-white placeholder:text-gray-500 focus:outline-none focus:border-blue-500"
                         disabled={editingField !== 'fullName'}
@@ -1173,7 +1145,7 @@ const Dashboard: React.FC = () => {
                     <div className="py-3 border-b border-gray-800">
                       <div className="flex items-center justify-between mb-2">
                         <label className="text-sm text-gray-400">Gender</label>
-                        <button
+                        <button 
                           onClick={() => setEditingField(editingField === 'gender' ? null : 'gender')}
                           className="text-blue-400 hover:text-blue-300 text-sm font-medium transition-colors"
                         >
@@ -1182,7 +1154,7 @@ const Dashboard: React.FC = () => {
                       </div>
                       <select
                         value={profileData.gender}
-                        onChange={(e) => setProfileData({ ...profileData, gender: e.target.value })}
+                        onChange={(e) => setProfileData({...profileData, gender: e.target.value})}
                         className="w-full bg-gray-800/50 border border-gray-700 rounded-lg px-4 py-2 text-white focus:outline-none focus:border-blue-500"
                         disabled={editingField !== 'gender'}
                       >
@@ -1196,7 +1168,7 @@ const Dashboard: React.FC = () => {
                     <div className="py-3 border-b border-gray-800">
                       <div className="flex items-center justify-between mb-2">
                         <label className="text-sm text-gray-400">Location</label>
-                        <button
+                        <button 
                           onClick={() => setEditingField(editingField === 'location' ? null : 'location')}
                           className="text-blue-400 hover:text-blue-300 text-sm font-medium transition-colors"
                         >
@@ -1206,7 +1178,7 @@ const Dashboard: React.FC = () => {
                       <input
                         type="text"
                         value={profileData.location}
-                        onChange={(e) => setProfileData({ ...profileData, location: e.target.value })}
+                        onChange={(e) => setProfileData({...profileData, location: e.target.value})}
                         placeholder="Enter your location"
                         className="w-full bg-gray-800/50 border border-gray-700 rounded-lg px-4 py-2 text-white placeholder:text-gray-500 focus:outline-none focus:border-blue-500"
                         disabled={editingField !== 'location'}
@@ -1216,7 +1188,7 @@ const Dashboard: React.FC = () => {
                     <div className="py-3 border-b border-gray-800">
                       <div className="flex items-center justify-between mb-2">
                         <label className="text-sm text-gray-400">Birth Date</label>
-                        <button
+                        <button 
                           onClick={() => setEditingField(editingField === 'birthDate' ? null : 'birthDate')}
                           className="text-blue-400 hover:text-blue-300 text-sm font-medium transition-colors"
                         >
@@ -1226,7 +1198,7 @@ const Dashboard: React.FC = () => {
                       <input
                         type="date"
                         value={profileData.birthDate}
-                        onChange={(e) => setProfileData({ ...profileData, birthDate: e.target.value })}
+                        onChange={(e) => setProfileData({...profileData, birthDate: e.target.value})}
                         className="w-full bg-gray-800/50 border border-gray-700 rounded-lg px-4 py-2 text-white focus:outline-none focus:border-blue-500"
                         disabled={editingField !== 'birthDate'}
                       />
@@ -1235,7 +1207,7 @@ const Dashboard: React.FC = () => {
                     <div className="py-3 border-b border-gray-800">
                       <div className="flex items-center justify-between mb-2">
                         <label className="text-sm text-gray-400">Past History</label>
-                        <button
+                        <button 
                           onClick={() => setEditingField(editingField === 'pastHistory' ? null : 'pastHistory')}
                           className="text-blue-400 hover:text-blue-300 text-sm font-medium transition-colors"
                         >
@@ -1244,7 +1216,7 @@ const Dashboard: React.FC = () => {
                       </div>
                       <textarea
                         value={profileData.pastHistory}
-                        onChange={(e) => setProfileData({ ...profileData, pastHistory: e.target.value })}
+                        onChange={(e) => setProfileData({...profileData, pastHistory: e.target.value})}
                         placeholder="Tell us about your medical history (allergies, previous conditions, etc.)"
                         rows={4}
                         className="w-full bg-gray-800/50 border border-gray-700 rounded-lg px-4 py-2 text-white placeholder:text-gray-500 focus:outline-none focus:border-blue-500 resize-none"
@@ -1309,9 +1281,9 @@ const Dashboard: React.FC = () => {
       )}
 
       {/* Medical History Modal */}
-      <MedicalHistory
-        isOpen={showMedicalHistory}
-        onClose={() => setShowMedicalHistory(false)}
+      <MedicalHistory 
+        isOpen={showMedicalHistory} 
+        onClose={() => setShowMedicalHistory(false)} 
       />
 
       {/* Settings Modal */}
@@ -1458,7 +1430,7 @@ const Dashboard: React.FC = () => {
                       <button className="flex flex-col items-center gap-2 group">
                         <div className="w-14 h-14 bg-blue-600 rounded-full flex items-center justify-center group-hover:scale-110 transition-transform">
                           <svg className="w-7 h-7 text-white" fill="currentColor" viewBox="0 0 24 24">
-                            <path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z" />
+                            <path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z"/>
                           </svg>
                         </div>
                         <span className="text-xs text-gray-600">Facebook</span>
@@ -1467,7 +1439,7 @@ const Dashboard: React.FC = () => {
                       <button className="flex flex-col items-center gap-2 group">
                         <div className="w-14 h-14 bg-black rounded-full flex items-center justify-center group-hover:scale-110 transition-transform">
                           <svg className="w-6 h-6 text-white" fill="currentColor" viewBox="0 0 24 24">
-                            <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z" />
+                            <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/>
                           </svg>
                         </div>
                         <span className="text-xs text-gray-600">X</span>
@@ -1476,7 +1448,7 @@ const Dashboard: React.FC = () => {
                       <button className="flex flex-col items-center gap-2 group">
                         <div className="w-14 h-14 bg-green-500 rounded-full flex items-center justify-center group-hover:scale-110 transition-transform">
                           <svg className="w-7 h-7 text-white" fill="currentColor" viewBox="0 0 24 24">
-                            <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413Z" />
+                            <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413Z"/>
                           </svg>
                         </div>
                         <span className="text-xs text-gray-600">Whatsapp</span>
@@ -1485,7 +1457,7 @@ const Dashboard: React.FC = () => {
                       <button className="flex flex-col items-center gap-2 group">
                         <div className="w-14 h-14 bg-blue-400 rounded-full flex items-center justify-center group-hover:scale-110 transition-transform">
                           <svg className="w-7 h-7 text-white" fill="currentColor" viewBox="0 0 24 24">
-                            <path d="M11.944 0A12 12 0 0 0 0 12a12 12 0 0 0 12 12 12 12 0 0 0 12-12A12 12 0 0 0 12 0a12 12 0 0 0-.056 0zm4.962 7.224c.1-.002.321.023.465.14a.506.506 0 0 1 .171.325c.016.093.036.306.02.472-.18 1.898-.962 6.502-1.36 8.627-.168.9-.499 1.201-.82 1.23-.696.065-1.225-.46-1.9-.902-1.056-.693-1.653-1.124-2.678-1.8-1.185-.78-.417-1.21.258-1.91.177-.184 3.247-2.977 3.307-3.23.007-.032.014-.15-.056-.212s-.174-.041-.249-.024c-.106.024-1.793 1.14-5.061 3.345-.48.33-.913.49-1.302.48-.428-.008-1.252-.241-1.865-.44-.752-.245-1.349-.374-1.297-.789.027-.216.325-.437.893-.663 3.498-1.524 5.83-2.529 6.998-3.014 3.332-1.386 4.025-1.627 4.476-1.635z" />
+                            <path d="M11.944 0A12 12 0 0 0 0 12a12 12 0 0 0 12 12 12 12 0 0 0 12-12A12 12 0 0 0 12 0a12 12 0 0 0-.056 0zm4.962 7.224c.1-.002.321.023.465.14a.506.506 0 0 1 .171.325c.016.093.036.306.02.472-.18 1.898-.962 6.502-1.36 8.627-.168.9-.499 1.201-.82 1.23-.696.065-1.225-.46-1.9-.902-1.056-.693-1.653-1.124-2.678-1.8-1.185-.78-.417-1.21.258-1.91.177-.184 3.247-2.977 3.307-3.23.007-.032.014-.15-.056-.212s-.174-.041-.249-.024c-.106.024-1.793 1.14-5.061 3.345-.48.33-.913.49-1.302.48-.428-.008-1.252-.241-1.865-.44-.752-.245-1.349-.374-1.297-.789.027-.216.325-.437.893-.663 3.498-1.524 5.83-2.529 6.998-3.014 3.332-1.386 4.025-1.627 4.476-1.635z"/>
                           </svg>
                         </div>
                         <span className="text-xs text-gray-600">Telegram</span>
@@ -1494,7 +1466,7 @@ const Dashboard: React.FC = () => {
                       <button className="flex flex-col items-center gap-2 group">
                         <div className="w-14 h-14 bg-blue-700 rounded-full flex items-center justify-center group-hover:scale-110 transition-transform">
                           <svg className="w-6 h-6 text-white" fill="currentColor" viewBox="0 0 24 24">
-                            <path d="M20.447 20.452h-3.554v-5.569c0-1.328-.027-3.037-1.852-3.037-1.853 0-2.136 1.445-2.136 2.939v5.667H9.351V9h3.414v1.561h.046c.477-.9 1.637-1.85 3.37-1.85 3.601 0 4.267 2.37 4.267 5.455v6.286zM5.337 7.433c-1.144 0-2.063-.926-2.063-2.065 0-1.138.92-2.063 2.063-2.063 1.14 0 2.064.925 2.064 2.063 0 1.139-.925 2.065-2.064 2.065zm1.782 13.019H3.555V9h3.564v11.452zM22.225 0H1.771C.792 0 0 .774 0 1.729v20.542C0 23.227.792 24 1.771 24h20.451C23.2 24 24 23.227 24 22.271V1.729C24 .774 23.2 0 22.222 0h.003z" />
+                            <path d="M20.447 20.452h-3.554v-5.569c0-1.328-.027-3.037-1.852-3.037-1.853 0-2.136 1.445-2.136 2.939v5.667H9.351V9h3.414v1.561h.046c.477-.9 1.637-1.85 3.37-1.85 3.601 0 4.267 2.37 4.267 5.455v6.286zM5.337 7.433c-1.144 0-2.063-.926-2.063-2.065 0-1.138.92-2.063 2.063-2.063 1.14 0 2.064.925 2.064 2.063 0 1.139-.925 2.065-2.064 2.065zm1.782 13.019H3.555V9h3.564v11.452zM22.225 0H1.771C.792 0 0 .774 0 1.729v20.542C0 23.227.792 24 1.771 24h20.451C23.2 24 24 23.227 24 22.271V1.729C24 .774 23.2 0 22.222 0h.003z"/>
                           </svg>
                         </div>
                         <span className="text-xs text-gray-600">LinkedIn</span>
@@ -1523,14 +1495,15 @@ const NavItem: React.FC<NavItemProps> = ({ icon: Icon, label, active, onClick, t
   return (
     <button
       onClick={onClick}
-      className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all relative group ${active
-        ? theme === 'dark'
-          ? 'bg-gradient-to-r from-blue-600/20 to-purple-600/20 text-white'
-          : 'bg-gradient-to-r from-blue-100 to-purple-100 text-gray-900'
-        : theme === 'dark'
-          ? 'text-gray-400 hover:text-white hover:bg-gray-800/30'
-          : 'text-gray-600 hover:text-gray-900 hover:bg-gray-100'
-        }`}
+      className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all relative group ${
+        active
+          ? theme === 'dark'
+            ? 'bg-gradient-to-r from-blue-600/20 to-purple-600/20 text-white'
+            : 'bg-gradient-to-r from-blue-100 to-purple-100 text-gray-900'
+          : theme === 'dark'
+            ? 'text-gray-400 hover:text-white hover:bg-gray-800/30'
+            : 'text-gray-600 hover:text-gray-900 hover:bg-gray-100'
+      }`}
     >
       {active && (
         <div className={`absolute inset-0 ${theme === 'dark' ? 'bg-gradient-to-r from-blue-600/10 to-purple-600/10' : 'bg-gradient-to-r from-blue-200/50 to-purple-200/50'} rounded-lg blur-xl`}></div>

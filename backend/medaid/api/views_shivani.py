@@ -281,25 +281,214 @@ class MedicalReportViewSet(viewsets.ModelViewSet):
 
 # ============= TRIAGE & AI ASSESSMENT =============
 
-@api_view(['POST'])
-@permission_classes([IsAuthenticated])
-def assess_symptoms(request):
+def process_follow_up_answers(request, triage_id, follow_up_answers):
     """
-    AI-powered triage assessment
-    
-    Request body:
-    {
-        "current_symptoms": "I have fever and body pain",
-        "input_mode": "text",  // text, voice, report
-        "medical_report_id": null,  // optional
-        "location": "Mumbai",  // optional
-        "pincode": "400001"  // optional
-    }
+    Phase 2: Process follow-up answers and complete the triage assessment
     """
     try:
         from datetime import datetime
         
         user = request.user
+        
+        # Get the preliminary triage record
+        try:
+            triage_record = TriageRecord.objects.get(id=triage_id, user=user, needs_follow_up=True)
+        except TriageRecord.DoesNotExist:
+            return Response(
+                {'error': 'Invalid triage ID or follow-up already completed'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Update with follow-up answers
+        triage_record.follow_up_answers = follow_up_answers
+        
+        # Combine initial symptoms with follow-up answers
+        combined_symptoms = f"{triage_record.current_symptoms}\\n\\nAdditional Information: {follow_up_answers}"
+        
+        # Get user profile data
+        profile = UserProfile.objects.filter(user=user).first()
+        age = None
+        gender = 'unknown'
+        past_history = []
+        
+        if profile:
+            if profile.date_of_birth:
+                from datetime import date
+                today = date.today()
+                age = today.year - profile.date_of_birth.year - (
+                    (today.month, today.day) < (profile.date_of_birth.month, profile.date_of_birth.day)
+                )
+            gender = profile.gender or 'unknown'
+            past_history = profile.past_history.get('conditions', []) if profile.past_history else []
+        
+        # Prepare user data for triage
+        user_data = {
+            'age': age or 'Adult',
+            'gender': gender,
+            'past_history': past_history
+        }
+        
+        # Get medical report summary if report_id was provided
+        report_summary = ""
+        if triage_record.medical_report_id:
+            try:
+                report = MedicalReport.objects.filter(id=triage_record.medical_report_id, user=user).first()
+                if report and report.structured_data:
+                    if 'llm_summary' in report.structured_data:
+                        report_summary = report.structured_data['llm_summary']
+                        if 'llm_key_findings' in report.structured_data:
+                            findings = report.structured_data['llm_key_findings']
+                            if findings:
+                                report_summary += " Key findings: " + ", ".join(findings[:5])
+                    else:
+                        tests = []
+                        for key, value in report.structured_data.items():
+                            if not key.startswith('llm_'):
+                                tests.append(f"{key}: {value}")
+                        report_summary = "; ".join(tests[:10])
+            except Exception as e:
+                print(f"Error getting report summary: {e}")
+        
+        # Get location from request (if provided in follow-up)
+        location = request.data.get('location', '')
+        pincode = request.data.get('pincode', '')
+        location_str = ""
+        if location and pincode:
+            location_str = f"{location}, Pincode: {pincode}"
+        elif location:
+            location_str = location
+        elif pincode:
+            location_str = f"Pincode: {pincode}"
+        
+        # NOW run the full V2 triage assessment with complete information
+        triage_engine_v2 = get_triage_engine_v2()
+        assessment = triage_engine_v2.assess(combined_symptoms, user_data, report_summary, location_str)
+        
+        # Find nearby hospitals if location provided
+        nearby_hospitals = []
+        if location or pincode:
+            try:
+                hospital_finder = get_hospital_finder()
+                search_location = location or pincode
+                hospitals = hospital_finder.find_nearby_hospitals(
+                    location=search_location,
+                    risk_level=assessment['risk_level'],
+                    radius=5000,
+                    max_results=5
+                )
+                
+                for hospital in hospitals:
+                    nearby_hospitals.append({
+                        'name': hospital.name,
+                        'address': hospital.address,
+                        'distance': hospital.distance,
+                        'rating': hospital.rating,
+                        'phone': hospital.phone,
+                        'is_open': hospital.is_open,
+                        'maps_url': hospital.get_google_maps_url()
+                    })
+            except Exception as e:
+                print(f"Error finding nearby hospitals: {e}")
+        
+        # UPDATE the triage record with final assessment
+        triage_record.risk_level = assessment['risk_level']
+        triage_record.risk_probability = assessment.get('risk_probability', 0.0)
+        triage_record.reasoning = assessment['reasoning']
+        triage_record.confidence = assessment.get('confidence', 0.0)
+        triage_record.assessment_source = 'ai_v2_with_followup'
+        triage_record.needs_follow_up = False  # Mark as complete
+        triage_record.save()
+        
+        # Save possible conditions with confidence scores
+        for condition in assessment.get('possible_conditions', []):
+            if isinstance(condition, dict):
+                PossibleCondition.objects.create(
+                    triage_record=triage_record,
+                    disease_name=condition.get('disease', 'Unknown'),
+                    confidence=condition.get('confidence', 0.0)
+                )
+            else:
+                PossibleCondition.objects.create(
+                    triage_record=triage_record,
+                    disease_name=str(condition),
+                    confidence=assessment.get('confidence', 0.0)
+                )
+        
+        # Save recommendations
+        for idx, rec in enumerate(assessment.get('recommendations', [])):
+            Recommendation.objects.create(
+                triage_record=triage_record,
+                recommendation_type='action',
+                description=rec,
+                priority=idx + 1
+            )
+        
+        # Build comprehensive response
+        response_data = {
+            'triage_id': triage_record.id,
+            'status': 'assessment_complete',
+            'risk_level': assessment['risk_level'],
+            'risk_probability': assessment.get('risk_probability', 0.0),
+            'reasoning': assessment['reasoning'],
+            'confidence': assessment.get('confidence', 0.0),
+            'possible_conditions': assessment.get('possible_conditions', []),
+            'ruled_out_conditions': assessment.get('ruled_out_conditions', []),
+            'recommendations': assessment.get('recommendations', []),
+            'when_to_seek_care': assessment.get('when_to_seek_care', ''),
+            'disclaimer': assessment.get('disclaimer', ''),
+            'nearby_hospitals': nearby_hospitals,
+            'created_at': triage_record.created_at,
+            'updated_at': triage_record.updated_at
+        }
+        
+        return Response(response_data, status=status.HTTP_200_OK)
+        
+    except Exception as e:
+        print(f"Error processing follow-up answers: {e}")
+        import traceback
+        traceback.print_exc()
+        return Response(
+            {'error': f'Error processing follow-up: {str(e)}'},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def assess_symptoms(request):
+    """
+    AI-powered triage assessment with two-phase flow
+    
+    Phase 1 - Initial symptoms:
+    {
+        "current_symptoms": "I have fever and body pain",
+        "input_mode": "text",
+        "medical_report_id": null,
+        "location": "Mumbai",
+        "pincode": "400001"
+    }
+    
+    Phase 2 - Follow-up answers:
+    {
+        "triage_id": 123,
+        "follow_up_answers": "3 days, 8/10 severity, yes I have a headache"
+    }
+    """
+    try:
+        from datetime import datetime
+        from .llm_symptom_extractor import get_llm_symptom_extractor
+        
+        user = request.user
+        
+        # Check if this is Phase 2 (answering follow-up questions)
+        triage_id = request.data.get('triage_id')
+        follow_up_answers = request.data.get('follow_up_answers')
+        
+        if triage_id and follow_up_answers:
+            # PHASE 2: Process follow-up answers and complete assessment
+            return process_follow_up_answers(request, triage_id, follow_up_answers)
+        
+        # PHASE 1: Initial symptom collection
         symptoms_text = request.data.get('current_symptoms', '')
         input_mode = request.data.get('input_mode', 'text')
         report_id = request.data.get('medical_report_id')
@@ -443,92 +632,47 @@ def assess_symptoms(request):
         elif pincode:
             location_str = f"Pincode: {pincode}"
         
-        # Run V2 triage assessment with all context
-        triage_engine_v2 = get_triage_engine_v2()
-        assessment = triage_engine_v2.assess(symptoms_text, user_data, report_summary, location_str)
+        # GENERATE FOLLOW-UP QUESTIONS FIRST (Phase 1)
+        llm_extractor = get_llm_symptom_extractor()
         
-        # Find nearby hospitals if location provided
-        nearby_hospitals = []
-        if location or pincode:
-            try:
-                hospital_finder = get_hospital_finder()
-                search_location = location or pincode
-                hospitals = hospital_finder.find_nearby_hospitals(
-                    location=search_location,
-                    risk_level=assessment['risk_level'],
-                    radius=5000,
-                    max_results=5
-                )
-                
-                # Convert to dict format
-                for hospital in hospitals:
-                    nearby_hospitals.append({
-                        'name': hospital.name,
-                        'address': hospital.address,
-                        'distance': hospital.distance,
-                        'rating': hospital.rating,
-                        'phone': hospital.phone,
-                        'is_open': hospital.is_open,
-                        'maps_url': hospital.get_google_maps_url()
-                    })
-            except Exception as e:
-                print(f"Error finding nearby hospitals: {e}")
+        # Build medical history string for context
+        medical_history_str = None
+        if past_history:
+            medical_history_str = ", ".join([cond.get('name', '') for cond in past_history if cond.get('selected') or cond.get('name')])
         
-        # Save triage record
+        follow_up_questions = llm_extractor.generate_follow_up_questions(
+            text=symptoms_text,
+            age=age,
+            sex=gender,
+            max_questions=3,
+            medical_history=medical_history_str
+        )
+        
+        # Create PRELIMINARY triage record (will be updated after follow-up)
         triage_record = TriageRecord.objects.create(
             user=user,
             current_symptoms=symptoms_text,
             input_mode=input_mode,
-            risk_level=assessment['risk_level'],
-            risk_probability=assessment.get('risk_probability', 0.0),
-            reasoning=assessment['reasoning'],
-            confidence=assessment.get('confidence', 0.0),
-            assessment_source='ai_v2',
-            medical_report_id=report_id if report_id else None
+            risk_level='low',  # Temporary - will be updated
+            risk_probability=0.0,
+            reasoning='Awaiting follow-up information',
+            confidence=0.0,
+            assessment_source='pending_followup',
+            medical_report_id=report_id if report_id else None,
+            needs_follow_up=True,
+            follow_up_questions=follow_up_questions
         )
         
-        # Save possible conditions with confidence scores
-        for condition in assessment.get('possible_conditions', []):
-            if isinstance(condition, dict):
-                PossibleCondition.objects.create(
-                    triage_record=triage_record,
-                    disease_name=condition.get('disease', 'Unknown'),
-                    confidence=condition.get('confidence', 0.0)
-                )
-            else:
-                PossibleCondition.objects.create(
-                    triage_record=triage_record,
-                    disease_name=str(condition),
-                    confidence=assessment.get('confidence', 0.0)
-                )
-        
-        # Save recommendations
-        for idx, rec in enumerate(assessment.get('recommendations', [])):
-            Recommendation.objects.create(
-                triage_record=triage_record,
-                recommendation_type='action',
-                description=rec,
-                priority=idx + 1
-            )
-        
-        # Build comprehensive response
+        # Return ONLY the follow-up questions (Phase 1 response)
         response_data = {
             'triage_id': triage_record.id,
-            'risk_level': assessment['risk_level'],
-            'risk_probability': assessment.get('risk_probability', 0.0),
-            'reasoning': assessment['reasoning'],
-            'confidence': assessment.get('confidence', 0.0),
-            'possible_conditions': assessment.get('possible_conditions', []),
-            'ruled_out_conditions': assessment.get('ruled_out_conditions', []),
-            'recommendations': assessment.get('recommendations', []),
-            'follow_up_questions': assessment.get('follow_up_questions', []),
-            'when_to_seek_care': assessment.get('when_to_seek_care', ''),
-            'disclaimer': assessment.get('disclaimer', ''),
-            'nearby_hospitals': nearby_hospitals,
-            'created_at': triage_record.created_at
+            'status': 'needs_follow_up',
+            'message': 'Please answer these questions to help us better understand your condition:',
+            'follow_up_questions': follow_up_questions,
+            'initial_symptoms': symptoms_text
         }
         
-        return Response(response_data, status=status.HTTP_201_CREATED)
+        return Response(response_data, status=status.HTTP_200_OK)
         
     except Exception as e:
         print(f"Error in triage assessment: {e}")

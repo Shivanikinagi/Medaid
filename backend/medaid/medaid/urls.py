@@ -21,13 +21,22 @@ from django.conf.urls.static import static
 from rest_framework.routers import DefaultRouter
 from rest_framework_simplejwt.views import TokenRefreshView
 from api import views
+from api import oauth_views
 
 # Create router for viewsets
 router = DefaultRouter()
 router.register(r'users', views.UserViewSet)
 router.register(r'medical-reports', views.MedicalReportViewSet, basename='medical-report')
 
+
+def ping(request):
+    from django.http import JsonResponse
+    return JsonResponse({'message': 'pong'})
+
 urlpatterns = [
+    # Direct test route
+    path('test-login/', views.login),
+    path('ping/', ping),
     path('', views.health_check, name='health_check'),
     path('admin/', admin.site.urls),
     path('api/', include([
@@ -36,6 +45,11 @@ urlpatterns = [
         path('auth/login/', views.login, name='login'),
         path('auth/logout/', views.logout, name='logout'),
         path('auth/token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
+        
+        # OAuth endpoints
+        path('auth/google/', oauth_views.google_oauth, name='google_oauth'),
+        path('auth/github/', oauth_views.github_oauth, name='github_oauth'),
+        path('auth/oauth/config/', oauth_views.get_oauth_config, name='oauth_config'),
         
         # User endpoints
         path('auth/me/', views.get_current_user, name='current_user'),

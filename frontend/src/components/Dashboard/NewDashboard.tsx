@@ -33,6 +33,11 @@ const NewDashboard: React.FC = () => {
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   
+  // Two-phase follow-up flow
+  const [pendingTriageId, setPendingTriageId] = useState<number | null>(null);
+  const [followUpQuestions, setFollowUpQuestions] = useState<string[]>([]);
+  const [waitingForFollowUp, setWaitingForFollowUp] = useState(false);
+  
   // Profile editing (for future use)
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const [profileData, setProfileData] = useState({
@@ -97,7 +102,8 @@ const NewDashboard: React.FC = () => {
 
   const getRiskColor = (risk?: string) => {
     if (!risk) return 'bg-gray-600';
-    switch (risk) {
+    const riskLower = risk.toLowerCase();
+    switch (riskLower) {
       case 'emergency': return 'bg-red-600';
       case 'high': return 'bg-orange-600';
       case 'medium': return 'bg-yellow-600';
@@ -143,6 +149,38 @@ const NewDashboard: React.FC = () => {
     try {
       const token = localStorage.getItem('access_token');
       
+      // Check if this is Phase 2 (answering follow-up questions)
+      if (waitingForFollowUp && pendingTriageId) {
+        // PHASE 2: Submit follow-up answers
+        const response = await fetch('http://127.0.0.1:8000/api/triage/assess/', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${token}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            triage_id: pendingTriageId,
+            follow_up_answers: currentInput
+          })
+        });
+
+        if (!response.ok) {
+          throw new Error('Failed to complete assessment');
+        }
+
+        const data = await response.json();
+        
+        // Reset follow-up state
+        setWaitingForFollowUp(false);
+        setPendingTriageId(null);
+        setFollowUpQuestions([]);
+        
+        // Display final assessment
+        displayTriageResults(data);
+        return;
+      }
+      
+      // PHASE 1: Initial symptom submission
       // Handle document upload first if present
       if (currentFile && inputMode === 'document') {
         const formData = new FormData();
@@ -177,7 +215,7 @@ const NewDashboard: React.FC = () => {
           });
 
           const triageData = await triageResponse.json();
-          displayTriageResults(triageData, reportData);
+          handleTriageResponse(triageData, reportData);
         }
       } else {
         // Regular symptom assessment
@@ -199,13 +237,14 @@ const NewDashboard: React.FC = () => {
         }
 
         const data = await response.json();
-        displayTriageResults(data);
+        console.log('Backend response:', data); // Debug log
+        handleTriageResponse(data);
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error:', error);
       const errorMessage: Message = {
         id: (Date.now() + 1).toString(),
-        text: "I apologize, but I'm having trouble processing your request. Please ensure your Google Gemini API key is configured in the backend .env file.",
+        text: `I apologize, but I'm having trouble processing your request right now.\n\n❌ Error: ${error.message || 'Unknown error'}\n\nTroubleshooting:\n1. Verify Google Gemini API key is set in backend/.env\n2. Ensure backend server is running\n3. Check browser console for detailed error\n\nFor detailed medical assessment, try the dedicated consultation page.`,
         sender: 'ai',
         timestamp: new Date(),
       };
@@ -215,23 +254,85 @@ const NewDashboard: React.FC = () => {
     }
   };
 
-  const displayTriageResults = (data: any, reportData?: any) => {
-    const riskLevel = data.risk_level;
-    const isEmergency = riskLevel === 'emergency';
+  const handleTriageResponse = (data: any, reportData?: any) => {
+    console.log('handleTriageResponse called with:', data);
     
-    let htmlContent = `
-      <div class="space-y-4">
-        <!-- Risk Badge -->
-        <div class="${getRiskColor(riskLevel)} text-white px-6 py-4 rounded-xl">
-          <div class="flex items-center gap-3 mb-2">
-            ${isEmergency ? 
-              '<svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>' :
-              '<svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>'
-            }
-            <h3 class="text-2xl font-bold uppercase">${riskLevel} Risk Assessment</h3>
+    // Check if this is Phase 1 (needs follow-up)
+    if (data.status === 'needs_follow_up' && data.follow_up_questions) {
+      console.log('Phase 1: Displaying follow-up questions');
+      // Store triage ID and questions
+      setPendingTriageId(data.triage_id);
+      setFollowUpQuestions(data.follow_up_questions);
+      setWaitingForFollowUp(true);
+      
+      // Display follow-up questions to user
+      const followUpMessage: Message = {
+        id: (Date.now() + 1).toString(),
+        text: `Thank you! To give you the most accurate assessment, I need a bit more information:\n\n${data.follow_up_questions.map((q: string, i: number) => `${i + 1}. ${q}`).join('\n\n')}\n\nPlease answer these questions in your next message.`,
+        sender: 'ai',
+        timestamp: new Date(),
+      };
+      setMessages(prev => [...prev, followUpMessage]);
+    } else if (data.risk_level || data.reasoning) {
+      console.log('Phase 2 or Emergency: Displaying final results');
+      // Display final results (Phase 2 or Emergency)
+      displayTriageResults(data, reportData);
+    } else {
+      console.error('Unknown response format:', data);
+      const errorMessage: Message = {
+        id: (Date.now() + 1).toString(),
+        text: "I received an unexpected response format. Please try again.",
+        sender: 'ai',
+        timestamp: new Date(),
+      };
+      setMessages(prev => [...prev, errorMessage]);
+    }
+  };
+
+  const displayTriageResults = (data: any, reportData?: any) => {
+    console.log('displayTriageResults called with data:', data);
+    
+    // Normalize risk_level (handle different cases)
+    let riskLevel = data.risk_level || data.Risk_Level || data.risk_Level || 'Unknown';
+    if (typeof riskLevel === 'string') {
+      riskLevel = riskLevel.trim();
+    } else {
+      riskLevel = 'Unknown'; // Force to string if not already
+    }
+    
+    const isEmergency = riskLevel?.toLowerCase() === 'emergency';
+    
+    // Validate data has required fields
+    if (!data.reasoning && !data.possible_conditions && !isEmergency) {
+      console.error('Incomplete triage data:', data);
+      const errorMessage: Message = {
+        id: (Date.now() + 1).toString(),
+        text: `I received an incomplete response. Please check console for details.`,
+        sender: 'ai',
+        timestamp: new Date(),
+      };
+      setMessages(prev => [...prev, errorMessage]);
+      return;
+    }
+    
+    try {
+      // Ensure all template variables are safe
+      const reasoning = String(data.reasoning || 'Assessment in progress');
+      const confidence = Number(data.confidence || 0);
+      
+      let htmlContent = `
+        <div class="space-y-4">
+          <!-- Risk Badge -->
+          <div class="${getRiskColor(riskLevel)} text-white px-6 py-4 rounded-xl">
+            <div class="flex items-center gap-3 mb-2">
+              ${isEmergency ? 
+                '<svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>' :
+                '<svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>'
+              }
+              <h3 class="text-2xl font-bold uppercase">${riskLevel} Risk Assessment</h3>
+            </div>
+            <p class="text-white/90 text-sm">Confidence: ${(confidence * 100).toFixed(0)}%</p>
           </div>
-          <p class="text-white/90 text-sm">Confidence: ${(data.confidence * 100).toFixed(0)}%</p>
-        </div>
 
         ${isEmergency ? `
           <div class="bg-red-900/30 border-2 border-red-500 rounded-xl p-4">
@@ -248,7 +349,7 @@ const NewDashboard: React.FC = () => {
         <!-- Reasoning -->
         <div class="bg-slate-700/50 rounded-xl p-4">
           <h4 class="text-white font-semibold mb-2">Analysis</h4>
-          <p class="text-slate-200 leading-relaxed">${data.reasoning}</p>
+          <p class="text-slate-200 leading-relaxed">${reasoning}</p>
         </div>
 
         ${reportData ? `
@@ -268,14 +369,28 @@ const NewDashboard: React.FC = () => {
           </div>
         ` : ''}
 
-        <!-- Possible Conditions -->
+        <!-- Possible Conditions (Top 3 Diseases with Risk Probability) -->
         ${data.possible_conditions && data.possible_conditions.length > 0 ? `
           <div class="bg-slate-700/50 rounded-xl p-4">
-            <h4 class="text-white font-semibold mb-3">Possible Conditions</h4>
-            <div class="grid grid-cols-2 gap-2">
-              ${data.possible_conditions.slice(0, 4).map((condition: string, idx: number) => `
-                <div class="bg-slate-600/50 rounded-lg p-3 text-center">
-                  <p class="text-slate-200 text-sm font-medium">${condition}</p>
+            <h4 class="text-white font-semibold mb-3">📋 Possible Conditions:</h4>
+            <div class="space-y-3">
+              ${data.possible_conditions.slice(0, 3).map((condition: any, idx: number) => `
+                <div class="bg-slate-600/50 rounded-lg p-4 border-l-4 ${idx === 0 ? 'border-red-500' : idx === 1 ? 'border-yellow-500' : 'border-blue-500'}">
+                  <div class="flex justify-between items-start mb-2">
+                    <p class="text-white font-semibold">${idx + 1}. ${typeof condition === 'string' ? condition : condition.disease}</p>
+                    ${typeof condition === 'object' && condition.confidence ? `
+                      <span class="px-2 py-1 rounded-full text-xs font-medium ${
+                        condition.confidence > 0.7 ? 'bg-red-500/20 text-red-300' : 
+                        condition.confidence > 0.4 ? 'bg-yellow-500/20 text-yellow-300' : 
+                        'bg-blue-500/20 text-blue-300'
+                      }">
+                        ${Math.round(condition.confidence * 100)}% probability
+                      </span>
+                    ` : ''}
+                  </div>
+                  ${typeof condition === 'object' && condition.supporting_evidence && condition.supporting_evidence.length > 0 ? `
+                    <p class="text-slate-300 text-sm">💡 Based on: ${condition.supporting_evidence.join(', ')}</p>
+                  ` : ''}
                 </div>
               `).join('')}
             </div>
@@ -293,6 +408,28 @@ const NewDashboard: React.FC = () => {
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
                   </svg>
                   <p class="text-slate-200 text-sm">${rec}</p>
+                </div>
+              `).join('')}
+            </div>
+          </div>
+        ` : ''}
+
+        <!-- Nearby Healthcare Facilities -->
+        ${data.nearby_facilities && data.nearby_facilities.length > 0 ? `
+          <div class="bg-slate-700/50 rounded-xl p-4">
+            <h4 class="text-white font-semibold mb-3">🏥 Nearby Healthcare Facilities</h4>
+            <div class="space-y-3">
+              ${data.nearby_facilities.map((facility: any) => `
+                <div class="bg-slate-600/50 rounded-lg p-3 border-l-4 border-blue-500">
+                  <div class="flex justify-between items-start">
+                    <div>
+                      <p class="text-white font-medium">${facility.name}</p>
+                      <p class="text-slate-300 text-xs mt-1">${facility.type} • ${facility.distance}</p>
+                    </div>
+                    ${facility.rating ? `
+                      <span class="text-yellow-400 text-sm">★ ${facility.rating}</span>
+                    ` : ''}
+                  </div>
                 </div>
               `).join('')}
             </div>
@@ -335,7 +472,7 @@ const NewDashboard: React.FC = () => {
 
     const aiMessage: Message = {
       id: (Date.now() + 1).toString(),
-      text: data.reasoning,
+      text: reasoning,
       html: htmlContent,
       sender: 'ai',
       timestamp: new Date(),
@@ -344,6 +481,16 @@ const NewDashboard: React.FC = () => {
     };
 
     setMessages(prev => [...prev, aiMessage]);
+    } catch (error: any) {
+      console.error('Error in displayTriageResults:', error);
+      const errorMessage: Message = {
+        id: (Date.now() + 1).toString(),
+        text: `Error displaying results: ${error.message}\n\nPlease check the console for details.`,
+        sender: 'ai',
+        timestamp: new Date(),
+      };
+      setMessages(prev => [...prev, errorMessage]);
+    }
   };
 
   const handleVoiceInput = () => {

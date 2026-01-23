@@ -4,6 +4,7 @@ import MedaidLanding from './components/MedaidLanding';
 import FeaturesPage from './components/FeaturesPage';
 import SignupPage from './components/Auth/SignupPage';
 import LoginPage from './components/Auth/LoginPage';
+import GoogleCallback from './components/Auth/GoogleCallback';
 import Dashboard from './components/Dashboard/Dashboard';
 import ConsultationWizard from './components/Consultation/ConsultationWizard';
 import MedicalHistoryForm from './components/Profile/MedicalHistoryForm';
@@ -21,6 +22,7 @@ const App: React.FC = () => {
       <Route path="/features" element={<FeaturesPage />} />
       <Route path="/signup" element={<SignupPage />} />
       <Route path="/login" element={<LoginPage />} />
+      <Route path="/auth/google/callback" element={<GoogleCallback />} />
       
       {/* Protected Routes with Layout */}
       <Route 

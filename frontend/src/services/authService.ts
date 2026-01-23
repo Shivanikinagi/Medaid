@@ -45,7 +45,17 @@ class AuthService {
 
       if (!response.ok) {
         const error = await response.json();
-        throw new Error(error.detail || 'Signup failed');
+        console.error('Signup validation error:', error);
+        // Extract the first error message from the response
+        const errorMessage = error.detail 
+          || error.email?.[0] 
+          || error.password?.[0] 
+          || error.confirm_password?.[0]
+          || error.first_name?.[0]
+          || error.last_name?.[0]
+          || Object.values(error)[0]
+          || 'Signup failed';
+        throw new Error(errorMessage);
       }
 
       const result = await response.json();
@@ -68,7 +78,14 @@ class AuthService {
       });
 
       if (!response.ok) {
-        const error = await response.json();
+        const text = await response.text();
+        let error;
+        try {
+          error = JSON.parse(text);
+        } catch {
+          console.error('Non-JSON error response:', text.substring(0, 100)); // Log first 100 chars
+          throw new Error(`Server Error (${response.status}): ${response.statusText}`);
+        }
         throw new Error(error.detail || 'Login failed');
       }
 
