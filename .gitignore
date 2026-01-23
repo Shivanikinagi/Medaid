@@ -1,5 +1,14 @@
 #Ignore vscode AI rules
 .github\instructions\codacy.instructions.md
 
+# Environment variables (contains secrets)
+.env
+*.env
+.env.local
+.env.*.local
+
+# Virtual environments
 full-stack/
 backend/venv/
+venv/
+env/
